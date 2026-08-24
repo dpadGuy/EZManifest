@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="EZManifest.Views.Pages.LibraryPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:EZManifest.Models"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Unloaded="Page_Unloaded">
+
+    <Grid Padding="16,12,8,0">
+        <ScrollViewer
+            HorizontalScrollMode="Disabled"
+            HorizontalScrollBarVisibility="Disabled"
+            VerticalScrollBarVisibility="Auto"
+            VerticalScrollMode="Enabled">
+            <ItemsRepeater
+                x:Name="GamesGrid"
+                Margin="0,0,16,0"
+                HorizontalAlignment="Stretch"
+                ItemsSource="{x:Bind FilteredApps, Mode=OneWay}">
+                <ItemsRepeater.Layout>
+                    <!-- Fill stretches cards across the full row so leftover right gutter disappears. -->
+                    <UniformGridLayout
+                        Orientation="Horizontal"
+                        MinItemWidth="180"
+                        MinRowSpacing="2"
+                        MinColumnSpacing="10"
+                        ItemsStretch="Fill"
+                        ItemsJustification="Start" />
+                </ItemsRepeater.Layout>
+                <ItemsRepeater.ItemTemplate>
+                    <DataTemplate x:DataType="models:GameEntry">
+                        <Border
+                            HorizontalAlignment="Stretch"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <Border.ContextFlyout>
+                                <MenuFlyout>
+                                    <MenuFlyoutItem Tag="{x:Bind}" Text="Open install location" Click="OpenInstallLocationMenuItem_Click" />
+                                    <MenuFlyoutItem Tag="{x:Bind}" Text="Patch with Goldberg" Click="PatchWithGoldbergButton_Click" />
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem Tag="{x:Bind}" Text="Uninstall" Click="UninstallMenuItem_Click" />
+                                </MenuFlyout>
+                            </Border.ContextFlyout>
+                            <StackPanel>
+                                <Border Height="260" CornerRadius="8,8,0,0">
+                                    <Image
+                                        Source="{x:Bind Image}"
+                                        Stretch="UniformToFill"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel Padding="10,6,10,10" Spacing="6">
+                                    <TextBlock
+                                        HorizontalAlignment="Center"
+                                        FontSize="14"
+                                        FontWeight="SemiBold"
+                                        Text="{x:Bind Name}"
+                                        TextTrimming="CharacterEllipsis" />
+                                    <Button
+                                        Tag="{x:Bind}"
+                                        HorizontalAlignment="Stretch"
+                                        Content="Play"
+                                        Click="PlayButton_Click" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsRepeater.ItemTemplate>
+            </ItemsRepeater>
+        </ScrollViewer>
+    </Grid>
+</Page>

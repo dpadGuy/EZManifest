@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="EZManifest.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="EZManifest">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Custom title bar: drag everywhere except interactive controls (passthrough). -->
+        <Grid
+            x:Name="AppTitleBar"
+            Grid.Row="0"
+            Background="Transparent"
+            SizeChanged="AppTitleBar_SizeChanged">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="TitleBarRightPadding" Width="0" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel
+                Grid.Column="0"
+                Margin="16,0,0,0"
+                Orientation="Horizontal"
+                Spacing="10"
+                VerticalAlignment="Center">
+                <Image
+                    Width="20"
+                    Height="20"
+                    Stretch="Uniform"
+                    Source="ms-appx:///Assets/EZManifestLogo.png"
+                    VerticalAlignment="Center" />
+                <TextBlock
+                    VerticalAlignment="Center"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    Text="EZManifest" />
+            </StackPanel>
+
+            <AutoSuggestBox
+                x:Name="TitleBarSearchBox"
+                Grid.Column="2"
+                Width="420"
+                MinWidth="240"
+                MaxWidth="520"
+                VerticalAlignment="Center"
+                PlaceholderText="Search..."
+                QueryIcon="Find"
+                Visibility="Collapsed"
+                TextChanged="TitleBarSearchBox_TextChanged"
+                SizeChanged="TitleBarSearchBox_SizeChanged" />
+        </Grid>
+
+        <NavigationView
+            x:Name="RootNavigation"
+            Grid.Row="1"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            PaneDisplayMode="LeftCompact"
+            SelectionChanged="RootNavigation_SelectionChanged">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="Library" Tag="Library">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Library" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Downloads" Tag="Downloads">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Download" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+            <NavigationView.FooterMenuItems>
+                <NavigationViewItem Content="Settings" Tag="Settings">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Setting" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.FooterMenuItems>
+
+            <Grid>
+                <Frame x:Name="ContentFrame" />
+                <InfoBar
+                    x:Name="AppInfoBar"
+                    Margin="24"
+                    VerticalAlignment="Bottom"
+                    IsClosable="True"
+                    IsOpen="False" />
+            </Grid>
+        </NavigationView>
+    </Grid>
+</Window>

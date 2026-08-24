@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="EZManifest.Views.Pages.DownloadsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:EZManifest.Models"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Padding="10" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Button
+            Content="Browse Manifest Archive"
+            Click="BrowseManifest_Click" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{x:Bind Downloads, Mode=OneWay}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="models:DownloadItem">
+                        <Border
+                            Margin="0,0,0,12"
+                            Padding="16"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                            <Grid RowSpacing="12">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <Border
+                                            Width="140"
+                                            Height="52"
+                                            Background="{ThemeResource ControlFillColorDefaultBrush}"
+                                            CornerRadius="4">
+                                            <Image Source="{x:Bind IconSource, Mode=OneWay}" Stretch="Uniform" />
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                                            <TextBlock FontWeight="SemiBold" Text="{x:Bind GameName, Mode=OneWay}" />
+                                            <TextBlock
+                                                FontSize="12"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="{x:Bind Status, Mode=OneWay}" />
+                                            <TextBlock
+                                                FontSize="12"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="{x:Bind SizeProgressText, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </StackPanel>
+
+                                    <TextBlock
+                                        Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="{x:Bind ProgressPercentText, Mode=OneWay}" />
+                                </Grid>
+
+                                <ProgressBar
+                                    Grid.Row="1"
+                                    Maximum="100"
+                                    Minimum="0"
+                                    Value="{x:Bind ProgressValue, Mode=OneWay}" />
+
+                                <StackPanel
+                                    Grid.Row="2"
+                                    HorizontalAlignment="Right"
+                                    Orientation="Horizontal"
+                                    Spacing="8">
+                                    <Button Content="Cancel" Command="{x:Bind CancelCommand, Mode=OneWay}" />
+                                    <Button Content="{x:Bind PauseButtonText, Mode=OneWay}" Command="{x:Bind PauseCommand, Mode=OneWay}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</Page>

@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "EZManifest (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "EZManifest (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
