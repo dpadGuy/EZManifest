@@ -1,5 +1,9 @@
 # EZManifest
 
+<p align="center">
+  <img src="EZManifest/Assets/EZManifestLogo.png" alt="EZManifest" width="360" />
+</p>
+
 Windows desktop app for importing Steam depot manifests, downloading game files from Steam CDN, and managing a local library.
 
 ## Features
