@@ -90,6 +90,6 @@ EZManifest/
 ## Great resources to use with EZManifest
 https://depotbox.org/
 
-https://github.com/BigBoiCJ/SteamAutoCracker
+https://github.com/SteamAutoCracks/Steam-auto-crack
 
 https://gamecopyworld.com/games/index.php
