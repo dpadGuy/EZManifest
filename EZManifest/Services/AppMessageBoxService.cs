@@ -6,7 +6,11 @@ namespace EZManifest.Services;
 public sealed class AppMessageBoxService
 {
     private readonly SemaphoreSlim _dialogGate = new(1, 1);
+    private readonly WindowProvider _windowProvider;
     private XamlRoot? _xamlRoot;
+
+    public AppMessageBoxService(WindowProvider windowProvider) =>
+        _windowProvider = windowProvider;
 
     public void SetXamlRoot(XamlRoot xamlRoot) => _xamlRoot = xamlRoot;
 
@@ -31,13 +35,31 @@ public sealed class AppMessageBoxService
             if (_xamlRoot is null)
                 throw new InvalidOperationException("XamlRoot has not been set. Call SetXamlRoot from the main window first.");
 
+            object dialogContent = content is string text
+                ? new TextBlock
+                {
+                    Text = text,
+                    TextWrapping = TextWrapping.WrapWholeWords,
+                    Margin = new Thickness(0, 0, 0, 4)
+                }
+                : content;
+
             var dialog = new ContentDialog
             {
                 Title = title,
-                Content = content,
+                Content = dialogContent,
                 CloseButtonText = closeButtonText,
-                XamlRoot = _xamlRoot
+                XamlRoot = _xamlRoot,
+                RequestedTheme = ResolveTheme()
             };
+
+            // Short string notices should size to content; custom content keeps roomier defaults.
+            dialog.Resources["ContentDialogMinHeight"] = 0.0;
+            if (content is string)
+            {
+                dialog.Resources["ContentDialogMinWidth"] = 320.0;
+                dialog.Resources["ContentDialogMaxWidth"] = 480.0;
+            }
 
             if (!string.IsNullOrWhiteSpace(primaryButtonText))
                 dialog.PrimaryButtonText = primaryButtonText;
@@ -48,5 +70,19 @@ public sealed class AppMessageBoxService
         {
             _dialogGate.Release();
         }
+    }
+
+    private ElementTheme ResolveTheme()
+    {
+        try
+        {
+            if (_windowProvider.Window.Content is FrameworkElement root)
+                return root.ActualTheme;
+        }
+        catch
+        {
+        }
+
+        return ElementTheme.Default;
     }
 }

@@ -18,7 +18,7 @@ public sealed class GameUninstallService
         _gameLibrary = gameLibrary;
     }
 
-    public async Task UninstallAsync(GameEntry game)
+    public async Task UninstallAsync(GameEntry game, bool removeFromLibrary = true)
     {
         string downloadRoot = Path.GetFullPath(await _settingsService.GetDownloadRootAsync());
         string installDirectory = !string.IsNullOrWhiteSpace(game.InstallPath) && Directory.Exists(game.InstallPath)
@@ -30,7 +30,8 @@ public sealed class GameUninstallService
         if (Directory.Exists(installDirectory))
             await Task.Run(() => Directory.Delete(installDirectory, recursive: true));
 
-        await _gameLibrary.RemoveAsync(game.AppId);
+        if (removeFromLibrary)
+            await _gameLibrary.RemoveAsync(game.AppId);
     }
 
     private static void EnsureSafeInstallDirectory(string downloadRoot, string installDirectory)

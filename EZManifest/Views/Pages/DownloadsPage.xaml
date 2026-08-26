@@ -8,17 +8,45 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <Grid Padding="10" RowSpacing="16">
+    <Grid
+        x:Name="DownloadsRoot"
+        Padding="10"
+        AllowDrop="True"
+        DragEnter="ManifestDropZone_DragEnter"
+        DragOver="ManifestDropZone_DragOver"
+        DragLeave="ManifestDropZone_DragLeave"
+        Drop="ManifestDropZone_Drop"
+        Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Button
-            Content="Browse Manifest Archive"
-            Click="BrowseManifest_Click" />
+        <!-- Shown while downloads are active (old top browse buttons). -->
+        <StackPanel
+            x:Name="BrowseActivePanel"
+            Margin="0,0,0,16"
+            Orientation="Horizontal"
+            Spacing="8"
+            Visibility="Collapsed">
+            <Button
+                Content="Browse manifest archive for download"
+                Click="BrowseManifestForDownload_Click" />
+            <Button
+                Content="Browse manifest archives for library adding"
+                Click="BrowseManifestForLibrary_Click" />
+        </StackPanel>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer
+            x:Name="DownloadsScrollViewer"
+            Grid.Row="1"
+            AllowDrop="True"
+            DragEnter="ManifestDropZone_DragEnter"
+            DragOver="ManifestDropZone_DragOver"
+            DragLeave="ManifestDropZone_DragLeave"
+            Drop="ManifestDropZone_Drop"
+            VerticalScrollBarVisibility="Auto"
+            Background="Transparent">
             <ItemsControl ItemsSource="{x:Bind Downloads, Mode=OneWay}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="models:DownloadItem">
@@ -90,5 +118,80 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
         </ScrollViewer>
+
+        <!-- Covers the full page when empty (no leftover top gap from the browse row). -->
+        <Border
+            x:Name="EmptyDropPrompt"
+            Grid.Row="0"
+            Grid.RowSpan="2"
+            AllowDrop="True"
+            DragEnter="ManifestDropZone_DragEnter"
+            DragOver="ManifestDropZone_DragOver"
+            DragLeave="ManifestDropZone_DragLeave"
+            Drop="ManifestDropZone_Drop"
+            IsHitTestVisible="True"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="2"
+            CornerRadius="8">
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="10">
+                <FontIcon
+                    FontFamily="Segoe Fluent Icons"
+                    Glyph="&#xF012;"
+                    FontSize="36"
+                    HorizontalAlignment="Center"
+                    Opacity="0.85" />
+                <StackPanel HorizontalAlignment="Center" Spacing="12">
+                    <StackPanel HorizontalAlignment="Center" Spacing="4">
+                        <Button
+                            HorizontalAlignment="Center"
+                            Content="Browse manifest archive for download"
+                            Click="BrowseManifestForDownload_Click" />
+                        <TextBlock
+                            HorizontalAlignment="Center"
+                            TextAlignment="Center"
+                            FontSize="12"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="One .zip only (file picker or drag and drop)" />
+                    </StackPanel>
+                    <StackPanel HorizontalAlignment="Center" Spacing="4">
+                        <Button
+                            HorizontalAlignment="Center"
+                            Content="Browse manifest archives for library adding"
+                            Click="BrowseManifestForLibrary_Click" />
+                        <TextBlock
+                            HorizontalAlignment="Center"
+                            TextAlignment="Center"
+                            FontSize="12"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="Multiple .zip files only (file picker or drag and drop)" />
+                    </StackPanel>
+                </StackPanel>
+                <TextBlock
+                    x:Name="DropZoneHint"
+                    Margin="0,4,0,0"
+                    HorizontalAlignment="Center"
+                    TextAlignment="Center"
+                    FontSize="12"
+                    TextWrapping="WrapWholeWords"
+                    Visibility="Collapsed"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="Drop .zip manifest archives here&#x0a;Each archive must contain a .lua file" />
+            </StackPanel>
+        </Border>
+
+        <Border
+            x:Name="DropHighlightOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="2"
+            IsHitTestVisible="False"
+            Visibility="Collapsed"
+            BorderThickness="3"
+            CornerRadius="8"
+            Background="#220078D4"
+            BorderBrush="#FF0078D4" />
     </Grid>
 </Page>

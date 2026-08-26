@@ -21,7 +21,9 @@ public sealed partial class MainWindow : Window
     private readonly AppMessageBoxService _messageBoxService;
     private readonly AppNotificationService _notificationService;
     private readonly AppSettingsService _settingsService;
+    private readonly DebugLogService _debugLogService;
     private readonly WindowProvider _windowProvider;
+    private readonly AppNavigationService _navigationService;
     private bool _startupInstallPromptShown;
     private bool _centeredOnStartup;
 
@@ -30,17 +32,23 @@ public sealed partial class MainWindow : Window
         AppMessageBoxService messageBoxService,
         AppNotificationService notificationService,
         AppSettingsService settingsService,
-        WindowProvider windowProvider)
+        DebugLogService debugLogService,
+        WindowProvider windowProvider,
+        AppNavigationService navigationService)
     {
         _services = services;
         _messageBoxService = messageBoxService;
         _notificationService = notificationService;
         _settingsService = settingsService;
+        _debugLogService = debugLogService;
         _windowProvider = windowProvider;
+        _navigationService = navigationService;
 
         InitializeComponent();
 
         _windowProvider.SetWindow(this);
+        _navigationService.Register(NavigateTo);
+        AppLog.Write("EZManifest started.");
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
@@ -59,12 +67,14 @@ public sealed partial class MainWindow : Window
 
         if (Content is FrameworkElement root)
         {
+            root.ActualThemeChanged += (_, _) => ConfigureCaptionButtonColors();
             root.Loaded += async (_, _) =>
             {
                 if (root.XamlRoot is not null)
                     _messageBoxService.SetXamlRoot(root.XamlRoot);
 
                 _notificationService.Initialize(AppInfoBar, DispatcherQueue);
+                ConfigureCaptionButtonColors();
                 UpdateTitleBarPassthroughRegion();
                 await PromptForInstallLocationIfNeededAsync();
             };
@@ -150,13 +160,34 @@ public sealed partial class MainWindow : Window
             workArea.Y + (workArea.Height - size.Height) / 2));
     }
 
-    private void ConfigureCaptionButtonColors()
+    public void ConfigureCaptionButtonColors()
     {
         var titleBar = AppWindow.TitleBar;
         titleBar.ButtonBackgroundColor = Colors.Transparent;
         titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
-        titleBar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(24, 255, 255, 255);
-        titleBar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(40, 255, 255, 255);
+
+        bool isDark = Content is FrameworkElement root
+            ? root.ActualTheme == ElementTheme.Dark
+            : Application.Current.RequestedTheme == ApplicationTheme.Dark;
+
+        if (isDark)
+        {
+            titleBar.ButtonForegroundColor = Colors.White;
+            titleBar.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(255, 160, 160, 160);
+            titleBar.ButtonHoverForegroundColor = Colors.White;
+            titleBar.ButtonPressedForegroundColor = Colors.White;
+            titleBar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(24, 255, 255, 255);
+            titleBar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(40, 255, 255, 255);
+        }
+        else
+        {
+            titleBar.ButtonForegroundColor = Colors.Black;
+            titleBar.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(255, 96, 96, 96);
+            titleBar.ButtonHoverForegroundColor = Colors.Black;
+            titleBar.ButtonPressedForegroundColor = Colors.Black;
+            titleBar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(24, 0, 0, 0);
+            titleBar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(40, 0, 0, 0);
+        }
     }
 
     private void RootNavigation_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -171,17 +202,34 @@ public sealed partial class MainWindow : Window
         {
             "Library" => _services.GetRequiredService<LibraryPage>(),
             "Downloads" => _services.GetRequiredService<DownloadsPage>(),
+            "Debug" => _services.GetRequiredService<DebugConsolePage>(),
             "Settings" => _services.GetRequiredService<SettingsPage>(),
             _ => _services.GetRequiredService<LibraryPage>()
         };
 
         ContentFrame.Content = page;
+        SelectNavigationItem(tag);
 
         TitleBarSearchBox.Visibility = page is LibraryPage ? Visibility.Visible : Visibility.Collapsed;
         UpdateTitleBarPassthroughRegion();
 
         if (page is LibraryPage library)
             library.ApplySearchFilter(TitleBarSearchBox.Text);
+    }
+
+    private void SelectNavigationItem(string tag)
+    {
+        foreach (object item in RootNavigation.MenuItems)
+        {
+            if (item is NavigationViewItem navItem &&
+                navItem.Tag is string itemTag &&
+                string.Equals(itemTag, tag, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!ReferenceEquals(RootNavigation.SelectedItem, navItem))
+                    RootNavigation.SelectedItem = navItem;
+                return;
+            }
+        }
     }
 
     private void TitleBarSearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)

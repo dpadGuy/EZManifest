@@ -7,12 +7,13 @@
     xmlns:local="using:EZManifest">
     <Application.Resources>
         <!-- Overrides must live inside XamlControlsResources.MergedDictionaries
-             or ContentDialogMaxWidth stays at the default ~548. -->
+             or ContentDialog size keys stay at WinUI defaults (tall/wide empty dialogs). -->
         <controls:XamlControlsResources>
             <controls:XamlControlsResources.MergedDictionaries>
                 <ResourceDictionary>
                     <x:Double x:Key="ContentDialogMaxWidth">900</x:Double>
-                    <x:Double x:Key="ContentDialogMinWidth">640</x:Double>
+                    <x:Double x:Key="ContentDialogMinWidth">320</x:Double>
+                    <x:Double x:Key="ContentDialogMinHeight">0</x:Double>
                 </ResourceDictionary>
             </controls:XamlControlsResources.MergedDictionaries>
         </controls:XamlControlsResources>

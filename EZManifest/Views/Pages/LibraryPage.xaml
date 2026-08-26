@@ -25,7 +25,7 @@
                     <UniformGridLayout
                         Orientation="Horizontal"
                         MinItemWidth="180"
-                        MinRowSpacing="2"
+                        MinRowSpacing="10"
                         MinColumnSpacing="10"
                         ItemsStretch="Fill"
                         ItemsJustification="Start" />
@@ -33,41 +33,74 @@
                 <ItemsRepeater.ItemTemplate>
                     <DataTemplate x:DataType="models:GameEntry">
                         <Border
+                            Tag="{x:Bind}"
                             HorizontalAlignment="Stretch"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1"
-                            CornerRadius="8">
-                            <Border.ContextFlyout>
-                                <MenuFlyout>
-                                    <MenuFlyoutItem Tag="{x:Bind}" Text="Open install location" Click="OpenInstallLocationMenuItem_Click" />
-                                    <MenuFlyoutItem Tag="{x:Bind}" Text="Patch with Goldberg" Click="PatchWithGoldbergButton_Click" />
-                                    <MenuFlyoutSeparator />
-                                    <MenuFlyoutItem Tag="{x:Bind}" Text="Uninstall" Click="UninstallMenuItem_Click" />
-                                </MenuFlyout>
-                            </Border.ContextFlyout>
-                            <StackPanel>
-                                <Border Height="260" CornerRadius="8,8,0,0">
-                                    <Image
-                                        Source="{x:Bind Image}"
-                                        Stretch="UniformToFill"
-                                        HorizontalAlignment="Center"
-                                        VerticalAlignment="Center" />
+                            CornerRadius="8"
+                            PointerPressed="Card_PointerPressed"
+                            DoubleTapped="Card_DoubleTapped"
+                            RightTapped="Card_RightTapped">
+                            <Grid VerticalAlignment="Top">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <!-- Cover art defaults to Steam portrait 300×450 (2:3). -->
+                                <Border
+                                    Grid.Row="0"
+                                    HorizontalAlignment="Stretch"
+                                    VerticalAlignment="Top"
+                                    Background="{ThemeResource ControlFillColorDefaultBrush}"
+                                    CornerRadius="8,8,0,0"
+                                    SizeChanged="CoverArt_SizeChanged">
+                                    <Grid>
+                                        <TextBlock
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            FontSize="14"
+                                            Opacity="0.55"
+                                            Text="No art"
+                                            Visibility="{x:Bind NoArtVisibility}" />
+                                        <Image
+                                            Source="{x:Bind Image}"
+                                            Stretch="Uniform"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            Visibility="{x:Bind CoverArtVisibility}" />
+                                    </Grid>
                                 </Border>
-                                <StackPanel Padding="10,6,10,10" Spacing="6">
-                                    <TextBlock
-                                        HorizontalAlignment="Center"
-                                        FontSize="14"
-                                        FontWeight="SemiBold"
-                                        Text="{x:Bind Name}"
-                                        TextTrimming="CharacterEllipsis" />
+                                <StackPanel
+                                    Grid.Row="1"
+                                    Padding="10,8,10,10"
+                                    Spacing="6">
+                                    <Grid Height="40" HorizontalAlignment="Stretch">
+                                        <TextBlock
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Center"
+                                            FontSize="{x:Bind TitleFontSize}"
+                                            FontWeight="SemiBold"
+                                            Text="{x:Bind Name}"
+                                            TextWrapping="WrapWholeWords"
+                                            TextTrimming="CharacterEllipsis"
+                                            MaxLines="2"
+                                            TextAlignment="Center" />
+                                    </Grid>
                                     <Button
                                         Tag="{x:Bind}"
                                         HorizontalAlignment="Stretch"
-                                        Content="Play"
-                                        Click="PlayButton_Click" />
+                                        Content="{x:Bind PrimaryActionText}"
+                                        Click="PrimaryActionButton_Click" />
                                 </StackPanel>
-                            </StackPanel>
+                                <Border
+                                    Grid.RowSpan="2"
+                                    IsHitTestVisible="False"
+                                    BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="8"
+                                    Visibility="{x:Bind SelectionVisibility, Mode=OneWay}" />
+                            </Grid>
                         </Border>
                     </DataTemplate>
                 </ItemsRepeater.ItemTemplate>

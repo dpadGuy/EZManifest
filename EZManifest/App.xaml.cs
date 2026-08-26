@@ -22,9 +22,27 @@ public partial class App : Application
 
     public IServiceProvider Services => _services;
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // Ensure the log buffer is subscribed before any page work.
+        _ = _services.GetRequiredService<DebugLogService>();
         _window = _services.GetRequiredService<MainWindow>();
+
+        try
+        {
+            var settings = await _services.GetRequiredService<AppSettingsService>().LoadAsync();
+            ElementTheme theme = SettingsViewModel.ParseTheme(settings.Theme);
+            if (theme is ElementTheme.Light or ElementTheme.Dark)
+            {
+                SetTheme(theme);
+                _services.GetRequiredService<SettingsViewModel>().CurrentTheme = theme;
+            }
+        }
+        catch
+        {
+            // Fall back to system / constructor theme.
+        }
+
         _window.Activate();
     }
 
@@ -32,6 +50,9 @@ public partial class App : Application
     {
         if (_window?.Content is FrameworkElement root)
             root.RequestedTheme = theme;
+
+        if (_window is MainWindow mainWindow)
+            mainWindow.ConfigureCaptionButtonColors();
     }
 
     private static IServiceProvider ConfigureServices()
@@ -40,9 +61,11 @@ public partial class App : Application
 
         services.AddSingleton<HttpClient>();
         services.AddSingleton<WindowProvider>();
+        services.AddSingleton<AppNavigationService>();
         services.AddSingleton<AppNotificationService>();
         services.AddSingleton<AppMessageBoxService>();
         services.AddSingleton<AppSettingsService>();
+        services.AddSingleton<DebugLogService>();
         services.AddSingleton<GameLibraryService>();
         services.AddSingleton<LuaManifestParser>();
         services.AddSingleton<GoldbergPatchService>();
@@ -56,6 +79,7 @@ public partial class App : Application
         services.AddSingleton<MainWindow>();
         services.AddSingleton<LibraryPage>();
         services.AddSingleton<DownloadsPage>();
+        services.AddSingleton<DebugConsolePage>();
         services.AddSingleton<SettingsPage>();
 
         return services.BuildServiceProvider();

@@ -84,6 +84,11 @@
                 </NavigationViewItem>
             </NavigationView.MenuItems>
             <NavigationView.FooterMenuItems>
+                <NavigationViewItem Content="Debug" Tag="Debug">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xEC7A;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="Settings" Tag="Settings">
                     <NavigationViewItem.Icon>
                         <SymbolIcon Symbol="Setting" />

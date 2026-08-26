@@ -15,8 +15,14 @@
     <Grid>
         <ScrollViewer Padding="24">
             <StackPanel Spacing="8" MaxWidth="720" HorizontalAlignment="Left">
-                <TextBlock FontSize="30" FontWeight="SemiBold" Text="Settings ⚙️" />
-                <TextBlock FontSize="20" FontWeight="SemiBold" Margin="0,8,0,0" Text="Theme 🎨" />
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                    <TextBlock FontSize="30" FontWeight="SemiBold" Text="Settings" />
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE713;" FontSize="30" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                    <TextBlock FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" Text="Theme" />
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE790;" FontSize="20" VerticalAlignment="Center" />
+                </StackPanel>
 
                 <RadioButton
                     Content="Light"
@@ -31,11 +37,13 @@
                     CommandParameter="theme_dark"
                     IsChecked="{x:Bind ViewModel.CurrentTheme, Converter={StaticResource EnumToBooleanConverter}, ConverterParameter=Dark, Mode=OneWay}" />
 
-                <TextBlock
-                    Margin="0,5,0,8"
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                    <TextBlock
                     FontSize="20"
                     FontWeight="SemiBold"
-                    Text="Enter your download path:" />
+                    Text="Enter your download path" />
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE896;" FontSize="20" VerticalAlignment="Center" />
+                </StackPanel>
 
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
@@ -57,11 +65,13 @@
                     Click="BrowseButton_Click"
                     Style="{StaticResource AccentButtonStyle}" />
 
-                <TextBlock
-                    Margin="0,5,0,8"
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                    <TextBlock
                     FontSize="20"
                     FontWeight="SemiBold"
-                    Text="CDN region 🗺️" />
+                    Text="CDN region" />
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE707;" FontSize="20" VerticalAlignment="Center" />
+                </StackPanel>
                 <TextBlock
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Text="Chooses which Steam content cell to query for download servers. Auto uses Steam's default list."
@@ -73,6 +83,46 @@
                     HorizontalAlignment="Left"
                     IsTextSearchEnabled="True"
                     SelectionChanged="CdnRegionComboBox_SelectionChanged" />
+
+
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                    <TextBlock
+                    FontSize="20"
+                    FontWeight="SemiBold"
+                    Text="Download concurrency" />
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE762;" FontSize="20" VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="How many depot chunks to download at once (1–64). Higher can be faster on good connections; too high may cause CDN timeouts. Default is 16. Applies to new downloads."
+                    TextWrapping="WrapWholeWords" />
+                <Grid ColumnSpacing="12" Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="120" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Button
+                        Content="Apply"
+                        Click="ApplyChunksButton_Click"
+                        Style="{StaticResource AccentButtonStyle}" />
+                    <TextBox
+                        x:Name="MaxChunksTextBox"
+                        Grid.Column="1"
+                        PlaceholderText="16"
+                        InputScope="Number" />
+                    <Button
+                        Grid.Row="1"
+                        Grid.Column="1"
+                        Margin="0,8,0,0"
+                        HorizontalAlignment="Stretch"
+                        Content="Restore default"
+                        Click="RestoreChunksDefaultButton_Click" />
+                </Grid>
             </StackPanel>
         </ScrollViewer>
 

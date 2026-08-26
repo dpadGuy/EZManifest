@@ -23,9 +23,18 @@ public sealed class GameLibraryService
             : JsonSerializer.Deserialize<List<GameEntry>>(json) ?? new List<GameEntry>();
 
         // Older entries accidentally stored the wide logo; prefer vertical cover when present.
+        // Also migrate pre-IsInstalled library rows that already have an install folder.
         bool changed = false;
         foreach (var game in games)
         {
+            if (!game.IsInstalled &&
+                !string.IsNullOrWhiteSpace(game.InstallPath) &&
+                Directory.Exists(game.InstallPath))
+            {
+                game.IsInstalled = true;
+                changed = true;
+            }
+
             if (string.IsNullOrWhiteSpace(game.Image))
                 continue;
 

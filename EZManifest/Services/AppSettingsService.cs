@@ -58,6 +58,19 @@ public sealed class AppSettingsService
         return settings.CdnCellId < 0 ? 0 : settings.CdnCellId;
     }
 
+    public async Task<int> GetMaxConcurrentChunksAsync()
+    {
+        var settings = await LoadAsync();
+        return ClampConcurrentChunks(settings.MaxConcurrentChunks);
+    }
+
+    public static int ClampConcurrentChunks(int value)
+    {
+        if (value < AppSettings.MinConcurrentChunks)
+            return AppSettings.DefaultMaxConcurrentChunks;
+        return Math.Clamp(value, AppSettings.MinConcurrentChunks, AppSettings.MaxConcurrentChunksLimit);
+    }
+
     public async Task UpdateAsync(Action<AppSettings> mutate)
     {
         var settings = await LoadAsync();

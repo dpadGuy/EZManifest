@@ -11,6 +11,7 @@ namespace EZManifest.Views.Pages;
 public sealed partial class SettingsPage : Page
 {
     private readonly AppSettingsService _settingsService;
+    private readonly AppMessageBoxService _messageBoxService;
     private readonly WindowProvider _windowProvider;
     private bool _suppressCdnSave;
 
@@ -19,10 +20,12 @@ public sealed partial class SettingsPage : Page
     public SettingsPage(
         SettingsViewModel viewModel,
         AppSettingsService settingsService,
+        AppMessageBoxService messageBoxService,
         WindowProvider windowProvider)
     {
         ViewModel = viewModel;
         _settingsService = settingsService;
+        _messageBoxService = messageBoxService;
         _windowProvider = windowProvider;
         InitializeComponent();
         _ = LoadSettingsAsync();
@@ -36,6 +39,8 @@ public sealed partial class SettingsPage : Page
             if (!string.IsNullOrWhiteSpace(settings.DownloadPath))
                 DownloadPathTextBox.Text = settings.DownloadPath;
 
+            MaxChunksTextBox.Text = AppSettingsService.ClampConcurrentChunks(settings.MaxConcurrentChunks).ToString();
+
             _suppressCdnSave = true;
             CdnRegionComboBox.ItemsSource = SteamCdnRegions.All;
             CdnRegionComboBox.SelectedItem = SteamCdnRegions.Find(settings.CdnCellId);
@@ -43,7 +48,7 @@ public sealed partial class SettingsPage : Page
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Error loading settings: {ex.Message}");
+            AppLog.Write(ex, "Error loading settings");
             _suppressCdnSave = false;
         }
     }
@@ -64,18 +69,69 @@ public sealed partial class SettingsPage : Page
     {
         try
         {
+            string path = DownloadPathTextBox.Text?.Trim() ?? string.Empty;
             await _settingsService.UpdateAsync(settings =>
-                settings.DownloadPath = DownloadPathTextBox.Text);
+                settings.DownloadPath = path);
+            DownloadPathTextBox.Text = path;
+            AppLog.Write($"[Settings] Download path saved: {path}");
+
+            await _messageBoxService.ShowAsync(
+                "Path applied",
+                string.IsNullOrWhiteSpace(path)
+                    ? "Download path cleared. New downloads will use the default location."
+                    : $"Download path set to:\n{path}\n\nNew downloads will use this folder.");
         }
         catch (Exception ex)
         {
-            await new ContentDialog
-            {
-                Title = "Could not save settings",
-                Content = $"{ex.Message}\n\nPath: {_settingsService.SettingsPath}",
-                CloseButtonText = "OK",
-                XamlRoot = XamlRoot
-            }.ShowAsync();
+            AppLog.Write(ex, "Failed to save download path");
+            await _messageBoxService.ShowAsync(
+                "Could not save settings",
+                $"{ex.Message}\n\nPath: {_settingsService.SettingsPath}");
+        }
+    }
+
+    private async void ApplyChunksButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!int.TryParse(MaxChunksTextBox.Text?.Trim(), out int requested) ||
+            requested < AppSettings.MinConcurrentChunks ||
+            requested > AppSettings.MaxConcurrentChunksLimit)
+        {
+            await _messageBoxService.ShowAsync(
+                "Invalid value",
+                $"Enter a whole number between {AppSettings.MinConcurrentChunks} and {AppSettings.MaxConcurrentChunksLimit}.");
+            return;
+        }
+
+        await SaveConcurrentChunksAsync(requested);
+    }
+
+    private async void RestoreChunksDefaultButton_Click(object sender, RoutedEventArgs e)
+    {
+        await SaveConcurrentChunksAsync(AppSettings.DefaultMaxConcurrentChunks);
+    }
+
+    private async Task SaveConcurrentChunksAsync(int requested)
+    {
+        int clamped = AppSettingsService.ClampConcurrentChunks(requested);
+
+        try
+        {
+            await _settingsService.UpdateAsync(settings => settings.MaxConcurrentChunks = clamped);
+            MaxChunksTextBox.Text = clamped.ToString();
+            AppLog.Write($"[Settings] Max concurrent chunks set to {clamped}");
+
+            string message = clamped == AppSettings.DefaultMaxConcurrentChunks
+                ? $"Download concurrency restored to the default of {clamped} chunk(s).\n\nNew downloads will use this value. A download already in progress keeps its previous setting."
+                : $"Download concurrency is now {clamped} chunk(s).\n\nNew downloads will use this value. A download already in progress keeps its previous setting.";
+
+            await _messageBoxService.ShowAsync("Setting applied", message);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save concurrent chunks");
+            await _messageBoxService.ShowAsync(
+                "Could not save settings",
+                $"{ex.Message}\n\nPath: {_settingsService.SettingsPath}");
         }
     }
 
@@ -90,10 +146,11 @@ public sealed partial class SettingsPage : Page
         try
         {
             await _settingsService.UpdateAsync(settings => settings.CdnCellId = region.CellId);
+            AppLog.Write($"[Settings] CDN region saved: {region.DisplayName} cellId={region.CellId}");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Failed to save CDN region: {ex.Message}");
+            AppLog.Write(ex, "Failed to save CDN region");
         }
     }
 }

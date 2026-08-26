@@ -14,6 +14,13 @@ public class DownloadItem : INotifyPropertyChanged
         set { _gameName = value; OnPropertyChanged(nameof(GameName)); }
     }
 
+    private string _appId = string.Empty;
+    public string AppId
+    {
+        get => _appId;
+        set { _appId = value; OnPropertyChanged(nameof(AppId)); }
+    }
+
     private string _status = string.Empty;
     public string Status
     {
@@ -41,7 +48,11 @@ public class DownloadItem : INotifyPropertyChanged
         }
     }
 
-    public string ProgressPercentText => $"{ProgressValue:0}%";
+    // Don't round 99.7% up to "100%" while bytes are still outstanding.
+    public string ProgressPercentText =>
+        TotalBytes > 0 && DownloadedBytes < TotalBytes
+            ? $"{Math.Min(99, (int)ProgressValue)}%"
+            : $"{ProgressValue:0}%";
 
     private long _downloadedBytes;
     public long DownloadedBytes
@@ -52,6 +63,7 @@ public class DownloadItem : INotifyPropertyChanged
             _downloadedBytes = value;
             OnPropertyChanged(nameof(DownloadedBytes));
             OnPropertyChanged(nameof(SizeProgressText));
+            OnPropertyChanged(nameof(ProgressPercentText));
         }
     }
 
@@ -64,6 +76,7 @@ public class DownloadItem : INotifyPropertyChanged
             _totalBytes = value;
             OnPropertyChanged(nameof(TotalBytes));
             OnPropertyChanged(nameof(SizeProgressText));
+            OnPropertyChanged(nameof(ProgressPercentText));
         }
     }
 
@@ -133,9 +146,12 @@ public class DownloadItem : INotifyPropertyChanged
             deltaBytes = 0;
 
         double instant = deltaBytes / elapsedSeconds;
-        _bytesPerSecond = _bytesPerSecond <= 0
-            ? instant
-            : (_bytesPerSecond * 0.65) + (instant * 0.35);
+        // Drop toward 0 quickly when heartbeats arrive with no new network bytes (stalled CDN).
+        _bytesPerSecond = deltaBytes == 0
+            ? _bytesPerSecond * 0.25
+            : _bytesPerSecond <= 0
+                ? instant
+                : (_bytesPerSecond * 0.65) + (instant * 0.35);
 
         _speedSampleTimestamp = now;
         _speedSampleBytes = networkBytesReceived;

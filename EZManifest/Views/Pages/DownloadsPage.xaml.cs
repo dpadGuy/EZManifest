@@ -5,6 +5,8 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 using RelayCommand = EZManifest.Commands.RelayCommand;
@@ -30,6 +32,10 @@ public sealed partial class DownloadsPage : Page
     private string _currentGameName = string.Empty;
     private string _currentCoverArtPath = string.Empty;
     private string _currentLogoPath = string.Empty;
+    private bool _dropHighlight;
+    private int _dragDepth;
+    private int _importBusy;
+    private bool _preserveLibraryOnCancel;
 
     public ObservableCollection<DownloadItem> Downloads { get; } = new();
 
@@ -59,9 +65,18 @@ public sealed partial class DownloadsPage : Page
         _windowProvider = windowProvider;
 
         InitializeComponent();
+        Downloads.CollectionChanged += (_, _) => UpdateEmptyState();
+        UpdateEmptyState();
     }
 
-    private async void BrowseManifest_Click(object sender, RoutedEventArgs e)
+    private void UpdateEmptyState()
+    {
+        bool empty = Downloads.Count == 0;
+        EmptyDropPrompt.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        BrowseActivePanel.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private async void BrowseManifestForDownload_Click(object sender, RoutedEventArgs e)
     {
         var picker = new FileOpenPicker();
         InitializeWithWindow.Initialize(picker, _windowProvider.GetWindowHandle());
@@ -72,57 +87,407 @@ public sealed partial class DownloadsPage : Page
         if (file is null)
             return;
 
+        await ImportManifestZipAsync(file.Path);
+    }
+
+    private async void BrowseManifestForLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new FileOpenPicker();
+        InitializeWithWindow.Initialize(picker, _windowProvider.GetWindowHandle());
+        picker.SuggestedStartLocation = PickerLocationId.Desktop;
+        picker.FileTypeFilter.Add(".zip");
+
+        IReadOnlyList<StorageFile> files = await picker.PickMultipleFilesAsync();
+        if (files is null || files.Count == 0)
+            return;
+
+        await ImportManifestsToLibraryAsync(files.Select(file => file.Path).ToList());
+    }
+
+    private async Task ImportManifestsToLibraryAsync(IReadOnlyList<string> zipPaths)
+    {
+        if (Interlocked.CompareExchange(ref _importBusy, 1, 0) != 0)
+        {
+            AppLog.Write("[Downloads] Library bulk import ignored (already in progress)");
+            return;
+        }
+
+        var statusText = new TextBlock
+        {
+            Text = "Preparing...",
+            TextWrapping = TextWrapping.WrapWholeWords
+        };
+        var progressBar = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = Math.Max(1, zipPaths.Count),
+            Value = 0,
+            Height = 8
+        };
+        var content = new StackPanel { Spacing = 12 };
+        content.Children.Add(statusText);
+        content.Children.Add(progressBar);
+
+        var dialog = new ContentDialog
+        {
+            Title = "Adding to library",
+            Content = content,
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme,
+            CloseButtonText = "Please wait..."
+        };
+        dialog.Resources["ContentDialogMinWidth"] = 420.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 560.0;
+
+        bool finished = false;
+        dialog.Closing += (_, args) =>
+        {
+            if (!finished)
+                args.Cancel = true;
+        };
+
+        var showTask = dialog.ShowAsync().AsTask();
+
+        int added = 0;
+        var failures = new List<string>();
+
         try
         {
-            await ExtractZipAsync(file.Path);
+            for (int i = 0; i < zipPaths.Count; i++)
+            {
+                string zipPath = zipPaths[i];
+                string fileName = Path.GetFileName(zipPath);
+                statusText.Text = $"Adding {fileName}\n({i + 1} of {zipPaths.Count})";
+
+                try
+                {
+                    await AddManifestToLibraryOnlyAsync(zipPath);
+                    added++;
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Write(ex, $"Library add failed for {zipPath}");
+                    failures.Add($"{fileName}: {ex.Message}");
+                }
+
+                progressBar.Value = i + 1;
+            }
+
+            statusText.Text = failures.Count == 0
+                ? $"Added {added} game(s) to the library."
+                : $"Added {added} of {zipPaths.Count}. {failures.Count} failed.";
+            if (failures.Count > 0 && failures.Count <= 5)
+                statusText.Text += "\n\n" + string.Join("\n", failures);
+
+            finished = true;
+            dialog.CloseButtonText = "OK";
+            await showTask;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Library bulk import failed");
+            finished = true;
+            try
+            {
+                dialog.Hide();
+            }
+            catch
+            {
+            }
+
+            _notifications.Show("Library import failed", ex.Message, InfoBarSeverity.Error);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _importBusy, 0);
+            RefreshService.RequestRefresh();
+        }
+
+        if (added > 0)
+        {
+            _notifications.Show(
+                "Library updated",
+                failures.Count == 0
+                    ? $"Added {added} game(s)."
+                    : $"Added {added}; {failures.Count} failed.",
+                failures.Count == 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        }
+    }
+
+    private async Task AddManifestToLibraryOnlyAsync(string zipPath)
+    {
+        AppLog.Write($"[Downloads] Library-only import: {zipPath}");
+        var archive = await _archiveService.ExtractAsync(zipPath);
+
+        if (IsAppCurrentlyDownloading(archive.AppId))
+            throw new InvalidOperationException($"App {archive.AppId} is already downloading.");
+
+        await _steamMetadata.DownloadArtworkAsync(archive.AppId, archive.LogoPath, archive.CoverArtPath);
+        string gameName = await _steamMetadata.GetGameNameAsync(archive.AppId);
+
+        await _gameLibrary.UpsertAsync(new GameEntry
+        {
+            AppId = archive.AppId,
+            Name = gameName,
+            Image = archive.CoverArtPath,
+            StartLocation = string.Empty,
+            InstallPath = string.Empty,
+            IsInstalled = false
+        });
+
+        AppLog.Write($"[Downloads] Library-only upserted appId={archive.AppId} name='{gameName}'");
+    }
+
+    /// <summary>Called from Library when the user taps Install on a library-only title.</summary>
+    public async Task BeginInstallFromLibraryAsync(GameEntry game)
+    {
+        if (game is null || string.IsNullOrWhiteSpace(game.AppId))
+            return;
+
+        if (IsAppCurrentlyDownloading(game.AppId))
+        {
+            await _messageBoxService.ShowAsync(
+                "Already downloading",
+                $"\"{game.Name}\" is currently in the download process.");
+            return;
+        }
+
+        string? extractionDir = ManifestArchiveService.FindExtractionDirectory(game.AppId);
+        string? luaPath = ManifestArchiveService.FindLuaPath(game.AppId);
+        if (extractionDir is null || luaPath is null)
+        {
+            await _messageBoxService.ShowAsync(
+                "Manifests missing",
+                $"No extracted manifest archive was found for {game.Name} (App ID {game.AppId}).\n\n" +
+                "Use Browse Manifest Archive for library adding again, or Browse Manifest Archive for download.");
+            return;
+        }
+
+        _finalPath = extractionDir;
+        _appId = game.AppId;
+        _currentGameName = string.IsNullOrWhiteSpace(game.Name) ? $"Steam App {_appId}" : game.Name;
+        _currentCoverArtPath = game.Image;
+        _currentLogoPath = string.IsNullOrWhiteSpace(game.Image)
+            ? string.Empty
+            : Path.Combine(Path.GetDirectoryName(game.Image) ?? string.Empty, "GameLogo.png");
+        _preserveLibraryOnCancel = true;
+
+        AppLog.Write($"[Downloads] Install from library appId={_appId} dir={_finalPath}");
+        await ManifestDepotIdChoiceAsync(luaPath, removeFromLibraryOnCancel: false);
+    }
+
+    private void ManifestDropZone_DragEnter(object sender, DragEventArgs e)
+    {
+        _dragDepth++;
+        UpdateDropTarget(e, highlight: true);
+    }
+
+    private void ManifestDropZone_DragOver(object sender, DragEventArgs e) =>
+        UpdateDropTarget(e, highlight: true);
+
+    private void ManifestDropZone_DragLeave(object sender, DragEventArgs e)
+    {
+        _dragDepth = Math.Max(0, _dragDepth - 1);
+        if (_dragDepth == 0)
+            SetDropHighlight(false);
+    }
+
+    private async void ManifestDropZone_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        _dragDepth = 0;
+        SetDropHighlight(false);
+
+        IReadOnlyList<string> zipPaths = await TryGetDroppedZipPathsAsync(e);
+        if (zipPaths.Count == 0)
+        {
+            _notifications.Show(
+                "Invalid drop",
+                "Drop one .zip for download, or multiple .zip files for library adding.",
+                InfoBarSeverity.Warning);
+            return;
+        }
+
+        if (zipPaths.Count == 1)
+        {
+            var choice = await _messageBoxService.ShowAsync(
+                "Import manifest",
+                $"How do you want to import \"{Path.GetFileName(zipPaths[0])}\"?\n\n" +
+                "Download — pick depots and start downloading.\n" +
+                "Add to library — add the title only (Install later).",
+                "Download",
+                "Add to library");
+
+            if (choice == ContentDialogResult.Primary)
+                await ImportManifestZipAsync(zipPaths[0]);
+            else
+                await ImportManifestsToLibraryAsync(zipPaths);
+
+            return;
+        }
+
+        await ImportManifestsToLibraryAsync(zipPaths);
+    }
+
+    private void UpdateDropTarget(DragEventArgs e, bool highlight)
+    {
+        bool canAccept = e.DataView.Contains(StandardDataFormats.StorageItems);
+        if (!canAccept)
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            SetDropHighlight(false);
+            return;
+        }
+
+        e.AcceptedOperation = DataPackageOperation.Copy;
+        e.DragUIOverride.IsCaptionVisible = true;
+        e.DragUIOverride.IsGlyphVisible = true;
+        e.DragUIOverride.Caption = "Drop .zip archive(s)";
+        if (highlight)
+            SetDropHighlight(true);
+    }
+
+    private void SetDropHighlight(bool on)
+    {
+        if (_dropHighlight == on)
+            return;
+
+        _dropHighlight = on;
+        DropHighlightOverlay.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+
+        if (EmptyDropPrompt.Visibility == Visibility.Visible)
+        {
+            object? accent = null;
+            Application.Current.Resources.TryGetValue("AccentFillColorDefaultBrush", out accent);
+            object? cardStroke = null;
+            Application.Current.Resources.TryGetValue("CardStrokeColorDefaultBrush", out cardStroke);
+
+            EmptyDropPrompt.BorderBrush = on
+                ? accent as Brush ?? new SolidColorBrush(Microsoft.UI.Colors.DodgerBlue)
+                : cardStroke as Brush ?? EmptyDropPrompt.BorderBrush;
+            EmptyDropPrompt.BorderThickness = new Thickness(on ? 3 : 2);
+        }
+
+        DropZoneHint.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        DropZoneHint.Text = on
+            ? "Release to import .zip archive(s)"
+            : "Drop .zip manifest archives here\nEach archive must contain a .lua file";
+    }
+
+    private static async Task<IReadOnlyList<string>> TryGetDroppedZipPathsAsync(DragEventArgs e)
+    {
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems))
+            return Array.Empty<string>();
+
+        IReadOnlyList<IStorageItem> items;
+        try
+        {
+            items = await e.DataView.GetStorageItemsAsync();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+
+        return items
+            .OfType<StorageFile>()
+            .Where(file => file.FileType.Equals(".zip", StringComparison.OrdinalIgnoreCase))
+            .Select(file => file.Path)
+            .ToList();
+    }
+
+    private async Task ImportManifestZipAsync(string zipPath)
+    {
+        // Drop can bubble through Page/Grid/ScrollViewer/EmptyPrompt — only import once.
+        if (Interlocked.CompareExchange(ref _importBusy, 1, 0) != 0)
+        {
+            AppLog.Write($"[Downloads] Import ignored (already in progress): {zipPath}");
+            return;
+        }
+
+        try
+        {
+            await ExtractZipAsync(zipPath);
         }
         catch (Exception ex)
         {
             _notifications.Show("Import failed", ex.Message, InfoBarSeverity.Error);
-            Debug.WriteLine($"[MANIFEST IMPORT ERROR]: {ex}");
+            AppLog.Write(ex, "Manifest import failed");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _importBusy, 0);
         }
     }
 
     private async Task ExtractZipAsync(string zipPath)
     {
+        AppLog.Write($"[Downloads] Importing archive: {zipPath}");
         var archive = await _archiveService.ExtractAsync(zipPath);
         _finalPath = archive.ExtractionDirectory;
         _appId = archive.AppId;
         _currentGameName = $"Steam App {_appId}";
         _currentLogoPath = archive.LogoPath;
         _currentCoverArtPath = archive.CoverArtPath;
+        AppLog.Write(
+            $"[Downloads] Extracted appId={_appId} dir={_finalPath} lua={archive.LuaFilePath} " +
+            $"logo={archive.LogoPath} cover={archive.CoverArtPath}");
+
+        if (IsAppCurrentlyDownloading(_appId))
+        {
+            string existingName = Downloads
+                .FirstOrDefault(d => string.Equals(d.AppId, _appId, StringComparison.OrdinalIgnoreCase))
+                ?.GameName
+                ?? _currentGameName;
+
+            AppLog.Write($"[Downloads] Rejected duplicate import appId={_appId} ('{existingName}') — already downloading");
+            await _messageBoxService.ShowAsync(
+                "Already downloading",
+                $"\"{existingName}\" is currently in the download process and cannot be added again.");
+            return;
+        }
 
         await _steamMetadata.DownloadArtworkAsync(_appId, archive.LogoPath, archive.CoverArtPath);
-        await AddSteamGameToLibraryAsync(_appId, archive.CoverArtPath);
-        await ManifestDepotIdChoiceAsync(archive.LuaFilePath);
+        _preserveLibraryOnCancel = false;
+        await AddSteamGameToLibraryAsync(_appId, archive.CoverArtPath, isInstalled: false);
+        await ManifestDepotIdChoiceAsync(archive.LuaFilePath, removeFromLibraryOnCancel: true);
     }
 
-    private async Task AddSteamGameToLibraryAsync(string appId, string coverArt)
+    private bool IsAppCurrentlyDownloading(string appId) =>
+        !string.IsNullOrWhiteSpace(appId) &&
+        Downloads.Any(d => string.Equals(d.AppId, appId, StringComparison.OrdinalIgnoreCase));
+
+    private async Task AddSteamGameToLibraryAsync(string appId, string coverArt, bool isInstalled)
     {
         try
         {
             string gameName = await _steamMetadata.GetGameNameAsync(appId);
             _currentGameName = gameName;
-            string installPath = await _installPathService.GetInstallDirectoryAsync(gameName, appId);
+            AppLog.Write($"[Downloads] Resolved game name appId={appId} → '{gameName}'");
+            string installPath = isInstalled
+                ? await _installPathService.GetInstallDirectoryAsync(gameName, appId)
+                : string.Empty;
             await _gameLibrary.UpsertAsync(new GameEntry
             {
                 AppId = appId,
                 Name = gameName,
                 Image = coverArt,
                 StartLocation = string.Empty,
-                InstallPath = installPath
+                InstallPath = installPath,
+                IsInstalled = isInstalled
             });
 
             RefreshService.RequestRefresh();
             _notifications.Show("Success", "Game added successfully!", InfoBarSeverity.Success);
+            AppLog.Write($"[Downloads] Library upserted installPath={installPath} isInstalled={isInstalled}");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Error: {ex.Message}");
+            AppLog.Write(ex, "AddSteamGameToLibrary failed");
         }
     }
 
-    private async Task ManifestDepotIdChoiceAsync(string luaFilePath)
+    private async Task ManifestDepotIdChoiceAsync(string luaFilePath, bool removeFromLibraryOnCancel)
     {
         var availableItems = _manifestParser.Parse(luaFilePath);
         var metadata = await _depotMetadata.GetDepotMetadataAsync(_appId);
@@ -131,7 +496,6 @@ public sealed partial class DownloadsPage : Page
         var root = new Grid
         {
             RowSpacing = 10,
-            MinWidth = 620,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -143,34 +507,48 @@ public sealed partial class DownloadsPage : Page
             Text = _currentGameName,
             FontSize = 28,
             FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-            TextWrapping = TextWrapping.Wrap
+            TextWrapping = TextWrapping.NoWrap
         };
         Grid.SetRow(titleBlock, 0);
         root.Children.Add(titleBlock);
 
-        var appIdBlock = new TextBlock
+        var appIdRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            Margin = new Thickness(0, 0, 0, 4),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        appIdRow.Children.Add(new TextBlock
         {
             Text = $"App ID {_appId}",
             Opacity = 0.7,
-            Margin = new Thickness(0, 0, 0, 4)
-        };
-        Grid.SetRow(appIdBlock, 1);
-        root.Children.Add(appIdBlock);
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        appIdRow.Children.Add(new HyperlinkButton
+        {
+            Content = "SteamDB depots",
+            NavigateUri = new Uri($"https://steamdb.info/app/{_appId}/depots/"),
+            Padding = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        Grid.SetRow(appIdRow, 1);
+        root.Children.Add(appIdRow);
 
-        // One shared Grid so header + rows share identical column widths.
+        // [check] [App ID *] [Manifest *] [DL size *] — equal category columns, centered text.
         var table = new Grid
         {
             ColumnSpacing = 16,
             RowSpacing = 4,
-            MinWidth = 600,
-            HorizontalAlignment = HorizontalAlignment.Stretch
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 0, 16, 0)
         };
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 200 });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 80 });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2.4, GridUnitType.Star), MinWidth = 160 });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 80 });
 
-        void AddHeaderCell(string text, int column, TextAlignment align = TextAlignment.Left)
+        void AddHeaderCell(string text, int column)
         {
             var block = new TextBlock
             {
@@ -178,10 +556,8 @@ public sealed partial class DownloadsPage : Page
                 FontSize = 12,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 Opacity = 0.7,
-                TextAlignment = align,
-                HorizontalAlignment = align == TextAlignment.Right
-                    ? HorizontalAlignment.Right
-                    : HorizontalAlignment.Left,
+                TextAlignment = TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetRow(block, 0);
@@ -192,9 +568,52 @@ public sealed partial class DownloadsPage : Page
         table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         AddHeaderCell("App ID", 1);
         AddHeaderCell("Manifest ID", 2);
-        AddHeaderCell("DL size", 3, TextAlignment.Right);
+        AddHeaderCell("DL size", 3);
 
         var checkBoxes = new List<CheckBox>();
+        var uncheckAllButton = new Button
+        {
+            Content = new FontIcon
+            {
+                Glyph = "\uE711",
+                FontSize = 10
+            },
+            Width = 20,
+            Height = 20,
+            MinWidth = 20,
+            MinHeight = 20,
+            MaxWidth = 20,
+            MaxHeight = 20,
+            Padding = new Thickness(0),
+            Margin = new Thickness(0),
+            CornerRadius = new CornerRadius(3),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        ToolTipService.SetToolTip(uncheckAllButton, "Uncheck all");
+        uncheckAllButton.Click += (_, _) =>
+        {
+            foreach (CheckBox box in checkBoxes)
+            {
+                if (box.IsEnabled)
+                    box.IsChecked = false;
+            }
+        };
+
+        // Match CheckBox layout: 32×32 hit area, glyph left-aligned inside it.
+        var uncheckHost = new Grid
+        {
+            Width = 32,
+            Height = 32,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        uncheckHost.Children.Add(uncheckAllButton);
+        Grid.SetRow(uncheckHost, 0);
+        Grid.SetColumn(uncheckHost, 0);
+        table.Children.Add(uncheckHost);
         for (int i = 0; i < displayRows.Count; i++)
         {
             int rowIndex = i + 1;
@@ -241,6 +660,8 @@ public sealed partial class DownloadsPage : Page
             {
                 Text = row.Display.DepotId,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextAlignment = TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 IsHitTestVisible = false
             };
@@ -251,6 +672,8 @@ public sealed partial class DownloadsPage : Page
             var manifestText = new TextBlock
             {
                 Text = row.Display.ManifestId,
+                TextAlignment = TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 IsHitTestVisible = false
@@ -262,9 +685,9 @@ public sealed partial class DownloadsPage : Page
             var sizeText = new TextBlock
             {
                 Text = row.Display.DownloadText,
+                TextAlignment = TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                TextAlignment = TextAlignment.Right,
                 IsHitTestVisible = false
             };
             Grid.SetRow(sizeText, rowIndex);
@@ -276,10 +699,12 @@ public sealed partial class DownloadsPage : Page
         {
             Content = table,
             MaxHeight = 360,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(0, 0, 8, 0),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollMode = ScrollMode.Enabled,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollMode = ScrollMode.Auto
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalScrollMode = ScrollMode.Disabled
         };
         Grid.SetRow(scrollViewer, 2);
         root.Children.Add(scrollViewer);
@@ -290,11 +715,12 @@ public sealed partial class DownloadsPage : Page
             PrimaryButtonText = "Download Selected",
             CloseButtonText = "Cancel",
             Content = root,
-            XamlRoot = XamlRoot
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme
         };
-        // Per-dialog override (App.xaml also sets these via XamlControlsResources).
+        // Width follows the title; table stretches to that full width.
+        dialog.Resources["ContentDialogMinWidth"] = 320.0;
         dialog.Resources["ContentDialogMaxWidth"] = 900.0;
-        dialog.Resources["ContentDialogMinWidth"] = 640.0;
 
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
@@ -306,15 +732,18 @@ public sealed partial class DownloadsPage : Page
 
             if (selectedItems.Count == 0)
             {
-                await _gameLibrary.RemoveAsync(_appId);
-                RefreshService.RequestRefresh();
+                if (removeFromLibraryOnCancel)
+                {
+                    await _gameLibrary.RemoveAsync(_appId);
+                    RefreshService.RequestRefresh();
+                }
                 return;
             }
 
             await StartDownloadProcessAsync(selectedItems);
             RefreshService.RequestRefresh();
         }
-        else
+        else if (removeFromLibraryOnCancel)
         {
             await _gameLibrary.RemoveAsync(_appId);
             RefreshService.RequestRefresh();
@@ -404,11 +833,20 @@ public sealed partial class DownloadsPage : Page
 
     private async Task StartDownloadProcessAsync(List<DepotInfo> selectedDepots)
     {
+        if (IsAppCurrentlyDownloading(_appId))
+        {
+            await _messageBoxService.ShowAsync(
+                "Already downloading",
+                $"\"{_currentGameName}\" is currently in the download process and cannot be added again.");
+            return;
+        }
+
         var cancellation = new CancellationTokenSource();
         var pause = new DownloadPauseState();
         var downloadItem = new DownloadItem
         {
             GameName = _currentGameName,
+            AppId = _appId,
             Status = $"Preparing {selectedDepots.Count} depot(s)...",
             IconSource = LoadImage(
                 File.Exists(_currentLogoPath) ? _currentLogoPath : _currentCoverArtPath),
@@ -423,6 +861,7 @@ public sealed partial class DownloadsPage : Page
 
             cancelRequested = true;
             downloadItem.Status = "Cancelling...";
+            AppLog.Write($"[Downloads] Cancel requested for '{_currentGameName}' appId={_appId}");
             try
             {
                 if (!cancellation.IsCancellationRequested)
@@ -430,7 +869,7 @@ public sealed partial class DownloadsPage : Page
             }
             catch (ObjectDisposedException)
             {
-                // Download task already finished and disposed the token source.
+                AppLog.Write("[Downloads] Cancel ignored: CancellationTokenSource already disposed");
             }
         });
         downloadItem.PauseCommand = new RelayCommand(() =>
@@ -442,15 +881,22 @@ public sealed partial class DownloadsPage : Page
             {
                 downloadItem.Status = "Paused";
                 downloadItem.PauseButtonText = "Resume";
+                AppLog.Write($"[Downloads] Paused '{_currentGameName}'");
             }
             else
             {
                 downloadItem.Status = "Downloading game files...";
                 downloadItem.PauseButtonText = "Pause";
+                AppLog.Write($"[Downloads] Resumed '{_currentGameName}'");
             }
         });
 
         Downloads.Add(downloadItem);
+        bool preserveLibraryOnCancel = _preserveLibraryOnCancel;
+        AppLog.Write(
+            $"[Downloads] Queued download '{_currentGameName}' appId={_appId} " +
+            $"selectedDepots={selectedDepots.Count} ids=[{string.Join(", ", selectedDepots.Select(d => d.DepotId))}] " +
+            $"preserveLibraryOnCancel={preserveLibraryOnCancel}");
 
         var progressReporter = new Progress<DownloadProgress>(progress =>
         {
@@ -464,6 +910,8 @@ public sealed partial class DownloadsPage : Page
                 downloadItem.TotalBytes = progress.TotalBytes;
                 downloadItem.NetworkBytesReceived = progress.NetworkBytesReceived;
                 downloadItem.ProgressValue = progress.Percentage;
+                if (progress.DownloadedBytes > 0 || progress.NetworkBytesReceived > 0)
+                    downloadItem.Status = "Downloading game files...";
             });
         });
 
@@ -476,6 +924,7 @@ public sealed partial class DownloadsPage : Page
             string cancelledCoverArt = _currentCoverArtPath;
             try
             {
+                AppLog.Write($"[Downloads] Worker start '{cancelledGameName}' appId={cancelledAppId}");
                 DispatcherQueue.TryEnqueue(() => downloadItem.Status = "Validating depots and keys...");
 
                 var depotKeys = new Dictionary<string, byte[]>();
@@ -490,6 +939,7 @@ public sealed partial class DownloadsPage : Page
                     if (manifestPath is null)
                     {
                         skippedDepots.Add(depot.DepotId);
+                        AppLog.Write($"[Downloads] Depot {depot.DepotId}: missing local .manifest (skipped)");
                         continue;
                     }
 
@@ -502,6 +952,9 @@ public sealed partial class DownloadsPage : Page
                     depotKeys[depot.DepotId] = Convert.FromHexString(depot.HexKey);
                     depot.ManifestPath = manifestPath;
                     readyDepots.Add(depot);
+                    AppLog.Write(
+                        $"[Downloads] Depot {depot.DepotId}: ready keyLen={depot.HexKey.Length / 2} " +
+                        $"manifest={manifestPath}");
                 }
 
                 if (readyDepots.Count == 0)
@@ -509,6 +962,7 @@ public sealed partial class DownloadsPage : Page
 
                 if (skippedDepots.Count > 0)
                 {
+                    AppLog.Write($"[Downloads] Skipped depots without manifest: {string.Join(", ", skippedDepots)}");
                     DispatcherQueue.TryEnqueue(() =>
                         _notifications.Show(
                             "Some depots skipped",
@@ -518,17 +972,23 @@ public sealed partial class DownloadsPage : Page
 
                 downloadDest = await _installPathService.GetInstallDirectoryAsync(cancelledGameName, cancelledAppId);
                 Directory.CreateDirectory(downloadDest);
+                AppLog.Write($"[Downloads] Install directory: {downloadDest}");
                 await _gameLibrary.UpsertAsync(new GameEntry
                 {
                     AppId = cancelledAppId,
                     Name = cancelledGameName,
                     Image = cancelledCoverArt,
-                    InstallPath = downloadDest
+                    InstallPath = downloadDest,
+                    IsInstalled = false
                 });
 
-                DispatcherQueue.TryEnqueue(() => downloadItem.Status = "Downloading game files...");
+                DispatcherQueue.TryEnqueue(() => downloadItem.Status = "Preparing install files...");
 
                 int cdnCellId = await _settingsService.GetCdnCellIdAsync();
+                int maxConcurrentChunks = await _settingsService.GetMaxConcurrentChunksAsync();
+                AppLog.Write(
+                    $"[Downloads] Engine settings cellId={cdnCellId} concurrency={maxConcurrentChunks} " +
+                    $"readyDepots={readyDepots.Count}");
                 await GameDownload.BatchEngineStart(
                     readyDepots,
                     depotKeys,
@@ -536,8 +996,20 @@ public sealed partial class DownloadsPage : Page
                     progressReporter,
                     pause.WaitWhilePausedAsync,
                     cancellation.Token,
-                    cdnCellId);
+                    cdnCellId,
+                    maxConcurrentChunks);
                 downloadCompleted = true;
+                AppLog.Write($"[Downloads] Completed '{cancelledGameName}' → {downloadDest}");
+
+                await _gameLibrary.UpsertAsync(new GameEntry
+                {
+                    AppId = cancelledAppId,
+                    Name = cancelledGameName,
+                    Image = cancelledCoverArt,
+                    InstallPath = downloadDest,
+                    IsInstalled = true
+                });
+                RequestLibraryRefresh();
 
                 DispatcherQueue.TryEnqueue(() =>
                 {
@@ -553,7 +1025,14 @@ public sealed partial class DownloadsPage : Page
             }
             catch (Exception ex) when (IsCancellation(ex, cancellation))
             {
-                await CleanupCancelledDownloadAsync(cancelledAppId, cancelledGameName, downloadDest);
+                AppLog.Write(
+                    $"[Downloads] Cancelled '{cancelledGameName}' appId={cancelledAppId} dest={downloadDest ?? "(unset)"}");
+                await CleanupCancelledDownloadAsync(
+                    cancelledAppId,
+                    cancelledGameName,
+                    cancelledCoverArt,
+                    downloadDest,
+                    preserveLibraryOnCancel);
 
                 DispatcherQueue.TryEnqueue(() =>
                 {
@@ -564,20 +1043,25 @@ public sealed partial class DownloadsPage : Page
             }
             catch (Exception ex)
             {
+                // Near-100% progress must not hide a real failure (last-chunk CDN hang/timeout).
+                string rootMessage = AppLog.GetRootMessage(ex);
+                AppLog.Write(ex, "Download critical error");
+                AppLog.Write(
+                    $"[Downloads] Failed '{cancelledGameName}' appId={cancelledAppId} " +
+                    $"completedFlag={downloadCompleted} dest={downloadDest ?? "(unset)"}");
+
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (downloadCompleted || downloadItem.ProgressValue >= 100)
+                    if (downloadCompleted)
                     {
                         downloadItem.ProgressValue = 100;
                         downloadItem.Status = "Download complete";
+                        return;
                     }
-                    else
-                    {
-                        downloadItem.Status = "Critical error";
-                        _notifications.Show("Error", ex.Message, InfoBarSeverity.Error);
-                    }
+
+                    downloadItem.Status = TruncateStatus($"Error: {rootMessage}");
+                    _notifications.Show("Error", rootMessage, InfoBarSeverity.Error);
                 });
-                Debug.WriteLine($"[CRASH TRACE]: {ex}");
             }
             finally
             {
@@ -594,10 +1078,18 @@ public sealed partial class DownloadsPage : Page
         await Task.CompletedTask;
     }
 
-    private async Task CleanupCancelledDownloadAsync(string appId, string gameName, string? downloadDest)
+    private async Task CleanupCancelledDownloadAsync(
+        string appId,
+        string gameName,
+        string coverArt,
+        string? downloadDest,
+        bool preserveLibrary)
     {
         try
         {
+            AppLog.Write(
+                $"[Downloads] Cleanup after cancel appId={appId} game='{gameName}' " +
+                $"dest={downloadDest ?? "(unset)"} preserveLibrary={preserveLibrary}");
             string installPath = downloadDest ?? string.Empty;
             if (string.IsNullOrWhiteSpace(installPath))
             {
@@ -605,8 +1097,9 @@ public sealed partial class DownloadsPage : Page
                 {
                     installPath = await _installPathService.GetInstallDirectoryAsync(gameName, appId);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    AppLog.Write(ex, "Cleanup resolve install path");
                     installPath = string.Empty;
                 }
             }
@@ -618,26 +1111,46 @@ public sealed partial class DownloadsPage : Page
                 {
                     try
                     {
-                        await _uninstallService.UninstallAsync(new GameEntry
-                        {
-                            AppId = appId,
-                            Name = gameName,
-                            InstallPath = installPath
-                        });
+                        AppLog.Write($"[Downloads] Uninstall cleanup attempt {attempt + 1}/5 path={installPath}");
+                        await _uninstallService.UninstallAsync(
+                            new GameEntry
+                            {
+                                AppId = appId,
+                                Name = gameName,
+                                InstallPath = installPath
+                            },
+                            removeFromLibrary: false);
+                        AppLog.Write("[Downloads] Uninstall cleanup succeeded");
                         break;
                     }
-                    catch (IOException) when (attempt < 4)
+                    catch (IOException ex) when (attempt < 4)
                     {
+                        AppLog.Write($"[Downloads] Cleanup IO retry: {ex.Message}");
                         await Task.Delay(250);
                     }
-                    catch (UnauthorizedAccessException) when (attempt < 4)
+                    catch (UnauthorizedAccessException ex) when (attempt < 4)
                     {
+                        AppLog.Write($"[Downloads] Cleanup access retry: {ex.Message}");
                         await Task.Delay(250);
                     }
                 }
             }
+
+            if (preserveLibrary)
+            {
+                await _gameLibrary.UpsertAsync(new GameEntry
+                {
+                    AppId = appId,
+                    Name = gameName,
+                    Image = coverArt,
+                    StartLocation = string.Empty,
+                    InstallPath = string.Empty,
+                    IsInstalled = false
+                });
+            }
             else if (!string.IsNullOrWhiteSpace(appId))
             {
+                AppLog.Write($"[Downloads] Cleanup: removing library entry appId={appId}");
                 await _gameLibrary.RemoveAsync(appId);
             }
 
@@ -645,14 +1158,29 @@ public sealed partial class DownloadsPage : Page
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[CANCEL CLEANUP]: {ex}");
+            AppLog.Write(ex, "Cancel cleanup failed");
             try
             {
-                if (!string.IsNullOrWhiteSpace(appId))
+                if (preserveLibrary)
+                {
+                    await _gameLibrary.UpsertAsync(new GameEntry
+                    {
+                        AppId = appId,
+                        Name = gameName,
+                        Image = coverArt,
+                        StartLocation = string.Empty,
+                        InstallPath = string.Empty,
+                        IsInstalled = false
+                    });
+                }
+                else if (!string.IsNullOrWhiteSpace(appId))
+                {
                     await _gameLibrary.RemoveAsync(appId);
+                }
             }
-            catch
+            catch (Exception removeEx)
             {
+                AppLog.Write(removeEx, "Cancel cleanup library update failed");
             }
 
             RequestLibraryRefresh();
@@ -682,6 +1210,13 @@ public sealed partial class DownloadsPage : Page
                (ex is AggregateException aggregate && aggregate.InnerExceptions.All(inner =>
                    inner is OperationCanceledException or TaskCanceledException ||
                    (inner is ObjectDisposedException && cancelRequested)));
+    }
+
+    private static string TruncateStatus(string status, int maxLength = 160)
+    {
+        if (string.IsNullOrEmpty(status) || status.Length <= maxLength)
+            return status;
+        return status[..(maxLength - 1)] + "…";
     }
 
     private static ImageSource? LoadImage(string imagePath)

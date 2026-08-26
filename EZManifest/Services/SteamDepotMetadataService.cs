@@ -23,7 +23,10 @@ public sealed class SteamDepotMetadataService
                 $"https://api.steamcmd.net/v1/info/{appId}",
                 cancellationToken);
             if (!response.IsSuccessStatusCode)
+            {
+                AppLog.Write($"[DepotMetadata] HTTP {(int)response.StatusCode} for appId={appId}");
                 return result;
+            }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
@@ -32,6 +35,7 @@ public sealed class SteamDepotMetadataService
                 !data.TryGetProperty(appId, out var app) ||
                 !app.TryGetProperty("depots", out var depots))
             {
+                AppLog.Write($"[DepotMetadata] Unexpected JSON shape for appId={appId}");
                 return result;
             }
 
@@ -72,10 +76,12 @@ public sealed class SteamDepotMetadataService
                     DownloadBytes = download
                 };
             }
+
+            AppLog.Write($"[DepotMetadata] Loaded {result.Count} depot(s) for appId={appId}");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[DEPOT METADATA]: {ex.Message}");
+            AppLog.Write(ex, $"[DepotMetadata] Failed for appId={appId}");
         }
 
         return result;
