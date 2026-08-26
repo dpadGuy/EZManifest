@@ -46,6 +46,8 @@ public sealed partial class MainWindow : Window
 
         InitializeComponent();
 
+        ApplyMinimumWindowSize();
+
         _windowProvider.SetWindow(this);
         _navigationService.Register(NavigateTo);
         AppLog.Write("EZManifest started.");
@@ -82,6 +84,25 @@ public sealed partial class MainWindow : Window
 
         RootNavigation.SelectedItem = RootNavigation.MenuItems[0];
         NavigateTo("Library");
+    }
+
+    private void ApplyMinimumWindowSize()
+    {
+        // Keep the shell usable (nav + at least one library card row).
+        const int minWidth = 960;
+        const int minHeight = 640;
+
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.PreferredMinimumWidth = minWidth;
+            presenter.PreferredMinimumHeight = minHeight;
+        }
+
+        SizeInt32 size = AppWindow.Size;
+        int width = Math.Max(size.Width, minWidth);
+        int height = Math.Max(size.Height, minHeight);
+        if (width != size.Width || height != size.Height)
+            AppWindow.Resize(new SizeInt32(width, height));
     }
 
     private async Task PromptForInstallLocationIfNeededAsync()
