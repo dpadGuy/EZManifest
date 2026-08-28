@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using EZManifest.Models;
 using EZManifest.Services;
 using Microsoft.UI.Xaml;
@@ -26,6 +27,7 @@ public sealed partial class DownloadsPage : Page
     private readonly AppMessageBoxService _messageBoxService;
     private readonly AppSettingsService _settingsService;
     private readonly WindowProvider _windowProvider;
+    private readonly PostDownloadService _postDownloadService;
 
     private string _finalPath = string.Empty;
     private string _appId = string.Empty;
@@ -50,7 +52,8 @@ public sealed partial class DownloadsPage : Page
         SteamDepotMetadataService depotMetadata,
         AppMessageBoxService messageBoxService,
         AppSettingsService settingsService,
-        WindowProvider windowProvider)
+        WindowProvider windowProvider,
+        PostDownloadService postDownloadService)
     {
         _notifications = notifications;
         _manifestParser = manifestParser;
@@ -63,6 +66,7 @@ public sealed partial class DownloadsPage : Page
         _messageBoxService = messageBoxService;
         _settingsService = settingsService;
         _windowProvider = windowProvider;
+        _postDownloadService = postDownloadService;
 
         InitializeComponent();
         Downloads.CollectionChanged += (_, _) => UpdateEmptyState();
@@ -78,19 +82,94 @@ public sealed partial class DownloadsPage : Page
 
     private async void BrowseManifestForDownload_Click(object sender, RoutedEventArgs e)
     {
+        var kind = await PromptZipOrFolderAsync(
+            "Browse for download",
+            "Choose .zip file or folder.");
+        if (kind is null)
+            return;
+
+        string? path = kind == ManifestPickKind.Zip
+            ? await PickZipFileAsync()
+            : await PickManifestFolderAsync();
+
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        await ImportManifestAsync(path);
+    }
+
+    private async void BrowseManifestForLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        var kind = await PromptZipOrFolderAsync(
+            "Browse for library adding",
+            "Choose .zip file or folder.");
+        if (kind is null)
+            return;
+
+        if (kind == ManifestPickKind.Zip)
+        {
+            IReadOnlyList<string>? paths = await PickZipFilesAsync();
+            if (paths is null || paths.Count == 0)
+                return;
+
+            await ImportManifestsToLibraryAsync(paths);
+            return;
+        }
+
+        string? folder = await PickManifestFolderAsync();
+        if (string.IsNullOrWhiteSpace(folder))
+            return;
+
+        await ImportManifestsToLibraryAsync(new[] { folder });
+    }
+
+    private enum ManifestPickKind
+    {
+        Zip,
+        Folder
+    }
+
+    private async Task<ManifestPickKind?> PromptZipOrFolderAsync(string title, string message)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = title,
+            Content = new TextBlock
+            {
+                Text = message,
+                TextWrapping = TextWrapping.WrapWholeWords
+            },
+            PrimaryButtonText = ".zip file",
+            SecondaryButtonText = "Folder",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme
+        };
+        dialog.Resources["ContentDialogMinWidth"] = 360.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 520.0;
+
+        var result = await dialog.ShowAsync();
+        return result switch
+        {
+            ContentDialogResult.Primary => ManifestPickKind.Zip,
+            ContentDialogResult.Secondary => ManifestPickKind.Folder,
+            _ => null
+        };
+    }
+
+    private async Task<string?> PickZipFileAsync()
+    {
         var picker = new FileOpenPicker();
         InitializeWithWindow.Initialize(picker, _windowProvider.GetWindowHandle());
         picker.SuggestedStartLocation = PickerLocationId.Desktop;
         picker.FileTypeFilter.Add(".zip");
 
         var file = await picker.PickSingleFileAsync();
-        if (file is null)
-            return;
-
-        await ImportManifestZipAsync(file.Path);
+        return file?.Path;
     }
 
-    private async void BrowseManifestForLibrary_Click(object sender, RoutedEventArgs e)
+    private async Task<IReadOnlyList<string>?> PickZipFilesAsync()
     {
         var picker = new FileOpenPicker();
         InitializeWithWindow.Initialize(picker, _windowProvider.GetWindowHandle());
@@ -99,12 +178,23 @@ public sealed partial class DownloadsPage : Page
 
         IReadOnlyList<StorageFile> files = await picker.PickMultipleFilesAsync();
         if (files is null || files.Count == 0)
-            return;
+            return null;
 
-        await ImportManifestsToLibraryAsync(files.Select(file => file.Path).ToList());
+        return files.Select(file => file.Path).ToList();
     }
 
-    private async Task ImportManifestsToLibraryAsync(IReadOnlyList<string> zipPaths)
+    private async Task<string?> PickManifestFolderAsync()
+    {
+        var picker = new FolderPicker();
+        InitializeWithWindow.Initialize(picker, _windowProvider.GetWindowHandle());
+        picker.SuggestedStartLocation = PickerLocationId.Desktop;
+        picker.FileTypeFilter.Add("*");
+
+        StorageFolder? folder = await picker.PickSingleFolderAsync();
+        return folder?.Path;
+    }
+
+    private async Task ImportManifestsToLibraryAsync(IReadOnlyList<string> paths)
     {
         if (Interlocked.CompareExchange(ref _importBusy, 1, 0) != 0)
         {
@@ -120,7 +210,7 @@ public sealed partial class DownloadsPage : Page
         var progressBar = new ProgressBar
         {
             Minimum = 0,
-            Maximum = Math.Max(1, zipPaths.Count),
+            Maximum = Math.Max(1, paths.Count),
             Value = 0,
             Height = 8
         };
@@ -153,21 +243,21 @@ public sealed partial class DownloadsPage : Page
 
         try
         {
-            for (int i = 0; i < zipPaths.Count; i++)
+            for (int i = 0; i < paths.Count; i++)
             {
-                string zipPath = zipPaths[i];
-                string fileName = Path.GetFileName(zipPath);
-                statusText.Text = $"Adding {fileName}\n({i + 1} of {zipPaths.Count})";
+                string path = paths[i];
+                string displayName = GetManifestDisplayName(path);
+                statusText.Text = $"Adding {displayName}\n({i + 1} of {paths.Count})";
 
                 try
                 {
-                    await AddManifestToLibraryOnlyAsync(zipPath);
+                    await AddManifestToLibraryOnlyAsync(path);
                     added++;
                 }
                 catch (Exception ex)
                 {
-                    AppLog.Write(ex, $"Library add failed for {zipPath}");
-                    failures.Add($"{fileName}: {ex.Message}");
+                    AppLog.Write(ex, $"Library add failed for {path}");
+                    failures.Add($"{displayName}: {ex.Message}");
                 }
 
                 progressBar.Value = i + 1;
@@ -175,7 +265,7 @@ public sealed partial class DownloadsPage : Page
 
             statusText.Text = failures.Count == 0
                 ? $"Added {added} game(s) to the library."
-                : $"Added {added} of {zipPaths.Count}. {failures.Count} failed.";
+                : $"Added {added} of {paths.Count}. {failures.Count} failed.";
             if (failures.Count > 0 && failures.Count <= 5)
                 statusText.Text += "\n\n" + string.Join("\n", failures);
 
@@ -214,10 +304,10 @@ public sealed partial class DownloadsPage : Page
         }
     }
 
-    private async Task AddManifestToLibraryOnlyAsync(string zipPath)
+    private async Task AddManifestToLibraryOnlyAsync(string path)
     {
-        AppLog.Write($"[Downloads] Library-only import: {zipPath}");
-        var archive = await _archiveService.ExtractAsync(zipPath);
+        AppLog.Write($"[Downloads] Library-only import: {path}");
+        var archive = await _archiveService.ExtractAsync(path);
 
         if (IsAppCurrentlyDownloading(archive.AppId))
             throw new InvalidOperationException($"App {archive.AppId} is already downloading.");
@@ -298,35 +388,33 @@ public sealed partial class DownloadsPage : Page
         _dragDepth = 0;
         SetDropHighlight(false);
 
-        IReadOnlyList<string> zipPaths = await TryGetDroppedZipPathsAsync(e);
-        if (zipPaths.Count == 0)
+        IReadOnlyList<string> paths = await TryGetDroppedManifestPathsAsync(e);
+        if (paths.Count == 0)
         {
             _notifications.Show(
                 "Invalid drop",
-                "Drop one .zip for download, or multiple .zip files for library adding.",
+                "Drop .zip file(s) or folder(s) that contain a .lua file.",
                 InfoBarSeverity.Warning);
             return;
         }
 
-        if (zipPaths.Count == 1)
+        if (paths.Count == 1)
         {
             var choice = await _messageBoxService.ShowAsync(
                 "Import manifest",
-                $"How do you want to import \"{Path.GetFileName(zipPaths[0])}\"?\n\n" +
-                "Download — pick depots and start downloading.\n" +
-                "Add to library — add the title only (Install later).",
+                $"Choose how to import \"{GetManifestDisplayName(paths[0])}\".",
                 "Download",
                 "Add to library");
 
             if (choice == ContentDialogResult.Primary)
-                await ImportManifestZipAsync(zipPaths[0]);
+                await ImportManifestAsync(paths[0]);
             else
-                await ImportManifestsToLibraryAsync(zipPaths);
+                await ImportManifestsToLibraryAsync(paths);
 
             return;
         }
 
-        await ImportManifestsToLibraryAsync(zipPaths);
+        await ImportManifestsToLibraryAsync(paths);
     }
 
     private void UpdateDropTarget(DragEventArgs e, bool highlight)
@@ -342,7 +430,7 @@ public sealed partial class DownloadsPage : Page
         e.AcceptedOperation = DataPackageOperation.Copy;
         e.DragUIOverride.IsCaptionVisible = true;
         e.DragUIOverride.IsGlyphVisible = true;
-        e.DragUIOverride.Caption = "Drop .zip archive(s)";
+        e.DragUIOverride.Caption = "Drop .zip or folder(s)";
         if (highlight)
             SetDropHighlight(true);
     }
@@ -370,11 +458,11 @@ public sealed partial class DownloadsPage : Page
 
         DropZoneHint.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
         DropZoneHint.Text = on
-            ? "Release to import .zip archive(s)"
-            : "Drop .zip manifest archives here\nEach archive must contain a .lua file";
+            ? "Release to import .zip or folder(s)"
+            : "Drop .zip archives or folders here\nEach must contain a .lua file";
     }
 
-    private static async Task<IReadOnlyList<string>> TryGetDroppedZipPathsAsync(DragEventArgs e)
+    private static async Task<IReadOnlyList<string>> TryGetDroppedManifestPathsAsync(DragEventArgs e)
     {
         if (!e.DataView.Contains(StandardDataFormats.StorageItems))
             return Array.Empty<string>();
@@ -389,25 +477,46 @@ public sealed partial class DownloadsPage : Page
             return Array.Empty<string>();
         }
 
-        return items
-            .OfType<StorageFile>()
-            .Where(file => file.FileType.Equals(".zip", StringComparison.OrdinalIgnoreCase))
-            .Select(file => file.Path)
-            .ToList();
+        var paths = new List<string>(items.Count);
+        foreach (IStorageItem item in items)
+        {
+            if (item is StorageFile file &&
+                file.FileType.Equals(".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                paths.Add(file.Path);
+            }
+            else if (item is StorageFolder folder)
+            {
+                paths.Add(folder.Path);
+            }
+        }
+
+        return paths;
     }
 
-    private async Task ImportManifestZipAsync(string zipPath)
+    private static string GetManifestDisplayName(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            string name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            return string.IsNullOrWhiteSpace(name) ? path : name;
+        }
+
+        return Path.GetFileName(path);
+    }
+
+    private async Task ImportManifestAsync(string path)
     {
         // Drop can bubble through Page/Grid/ScrollViewer/EmptyPrompt — only import once.
         if (Interlocked.CompareExchange(ref _importBusy, 1, 0) != 0)
         {
-            AppLog.Write($"[Downloads] Import ignored (already in progress): {zipPath}");
+            AppLog.Write($"[Downloads] Import ignored (already in progress): {path}");
             return;
         }
 
         try
         {
-            await ExtractZipAsync(zipPath);
+            await ImportManifestCoreAsync(path);
         }
         catch (Exception ex)
         {
@@ -420,17 +529,17 @@ public sealed partial class DownloadsPage : Page
         }
     }
 
-    private async Task ExtractZipAsync(string zipPath)
+    private async Task ImportManifestCoreAsync(string path)
     {
-        AppLog.Write($"[Downloads] Importing archive: {zipPath}");
-        var archive = await _archiveService.ExtractAsync(zipPath);
+        AppLog.Write($"[Downloads] Importing: {path}");
+        var archive = await _archiveService.ExtractAsync(path);
         _finalPath = archive.ExtractionDirectory;
         _appId = archive.AppId;
         _currentGameName = $"Steam App {_appId}";
         _currentLogoPath = archive.LogoPath;
         _currentCoverArtPath = archive.CoverArtPath;
         AppLog.Write(
-            $"[Downloads] Extracted appId={_appId} dir={_finalPath} lua={archive.LuaFilePath} " +
+            $"[Downloads] Imported appId={_appId} dir={_finalPath} lua={archive.LuaFilePath} " +
             $"logo={archive.LogoPath} cover={archive.CoverArtPath}");
 
         if (IsAppCurrentlyDownloading(_appId))
@@ -532,6 +641,21 @@ public sealed partial class DownloadsPage : Page
             Padding = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center
         });
+        var executePostDownloadCheck = new CheckBox
+        {
+            Content = new TextBlock
+            {
+                Text = "Remove Steam DRM",
+                Margin = new Thickness(8, 0, 0, 0)
+            },
+            IsChecked = true,
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        appIdRow.Children.Add(executePostDownloadCheck);
         Grid.SetRow(appIdRow, 1);
         root.Children.Add(appIdRow);
 
@@ -740,7 +864,9 @@ public sealed partial class DownloadsPage : Page
                 return;
             }
 
-            await StartDownloadProcessAsync(selectedItems);
+            await StartDownloadProcessAsync(
+                selectedItems,
+                executePostDownload: executePostDownloadCheck.IsChecked == true);
             RefreshService.RequestRefresh();
         }
         else if (removeFromLibraryOnCancel)
@@ -831,7 +957,7 @@ public sealed partial class DownloadsPage : Page
         }
     }
 
-    private async Task StartDownloadProcessAsync(List<DepotInfo> selectedDepots)
+    private async Task StartDownloadProcessAsync(List<DepotInfo> selectedDepots, bool executePostDownload)
     {
         if (IsAppCurrentlyDownloading(_appId))
         {
@@ -896,7 +1022,7 @@ public sealed partial class DownloadsPage : Page
         AppLog.Write(
             $"[Downloads] Queued download '{_currentGameName}' appId={_appId} " +
             $"selectedDepots={selectedDepots.Count} ids=[{string.Join(", ", selectedDepots.Select(d => d.DepotId))}] " +
-            $"preserveLibraryOnCancel={preserveLibraryOnCancel}");
+            $"preserveLibraryOnCancel={preserveLibraryOnCancel} executePostDownload={executePostDownload}");
 
         var progressReporter = new Progress<DownloadProgress>(progress =>
         {
@@ -1010,6 +1136,16 @@ public sealed partial class DownloadsPage : Page
                     IsInstalled = true
                 });
                 RequestLibraryRefresh();
+
+                if (executePostDownload)
+                {
+                    DispatcherQueue.TryEnqueue(() => downloadItem.Status = "Removing Steam DRM - SteamAutoCrack in progress...");
+                    await _postDownloadService.RunPostDownloadCommandAsync(
+                        cancelledGameName,
+                        cancelledAppId,
+                        downloadDest,
+                        cancellation.Token);
+                }
 
                 DispatcherQueue.TryEnqueue(() =>
                 {

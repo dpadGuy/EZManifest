@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="EZManifest.Views.Pages.LibraryPage"
+    x:Name="LibraryRoot"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:models="using:EZManifest.Models"
@@ -11,14 +12,21 @@
 
     <Grid Padding="16,12,8,0">
         <ScrollViewer
+            x:Name="LibraryScroll"
             HorizontalScrollMode="Disabled"
             HorizontalScrollBarVisibility="Disabled"
             VerticalScrollBarVisibility="Auto"
-            VerticalScrollMode="Enabled">
+            VerticalScrollMode="Enabled"
+            ZoomMode="Disabled"
+            SizeChanged="LibraryScroll_SizeChanged">
             <ItemsRepeater
                 x:Name="GamesGrid"
                 Margin="0,0,16,0"
                 HorizontalAlignment="Stretch"
+                VerticalCacheLength="2"
+                HorizontalCacheLength="0"
+                ElementPrepared="GamesGrid_ElementPrepared"
+                ElementClearing="GamesGrid_ElementClearing"
                 ItemsSource="{x:Bind FilteredApps, Mode=OneWay}">
                 <ItemsRepeater.Layout>
                     <!-- Fill stretches cards across the full row so leftover right gutter disappears. -->
@@ -47,14 +55,13 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <!-- Cover art defaults to Steam portrait 300×450 (2:3). -->
                                 <Border
                                     Grid.Row="0"
+                                    Height="{Binding CoverArtHeight, ElementName=LibraryRoot}"
                                     HorizontalAlignment="Stretch"
                                     VerticalAlignment="Top"
                                     Background="{ThemeResource ControlFillColorDefaultBrush}"
-                                    CornerRadius="8,8,0,0"
-                                    SizeChanged="CoverArt_SizeChanged">
+                                    CornerRadius="8,8,0,0">
                                     <Grid>
                                         <TextBlock
                                             HorizontalAlignment="Center"
@@ -64,10 +71,8 @@
                                             Text="No art"
                                             Visibility="{x:Bind NoArtVisibility}" />
                                         <Image
-                                            Source="{x:Bind Image}"
-                                            Stretch="Uniform"
-                                            HorizontalAlignment="Center"
-                                            VerticalAlignment="Center"
+                                            x:Name="CoverImage"
+                                            Stretch="UniformToFill"
                                             Visibility="{x:Bind CoverArtVisibility}" />
                                     </Grid>
                                 </Border>
@@ -87,17 +92,41 @@
                                             MaxLines="2"
                                             TextAlignment="Center" />
                                     </Grid>
-                                    <Button
-                                        Tag="{x:Bind}"
-                                        HorizontalAlignment="Stretch"
-                                        Content="{x:Bind PrimaryActionText}"
-                                        Click="PrimaryActionButton_Click" />
+                                    <Grid>
+                                        <Button
+                                            Tag="{x:Bind}"
+                                            HorizontalAlignment="Stretch"
+                                            Content="Play"
+                                            Visibility="{x:Bind PlayButtonVisibility}"
+                                            Click="PrimaryActionButton_Click">
+                                            <Button.Resources>
+                                                <SolidColorBrush x:Key="ButtonBackground" Color="#0F9D58" />
+                                                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#18C46A" />
+                                                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#0C7A45" />
+                                                <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#0F9D58" Opacity="0.5" />
+                                                <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                                <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                                <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                                <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" Opacity="0.7" />
+                                                <SolidColorBrush x:Key="ButtonBorderBrush" Color="#0F9D58" />
+                                                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#18C46A" />
+                                                <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#0C7A45" />
+                                                <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#0F9D58" Opacity="0.5" />
+                                            </Button.Resources>
+                                        </Button>
+                                        <Button
+                                            Tag="{x:Bind}"
+                                            HorizontalAlignment="Stretch"
+                                            Content="Install"
+                                            Visibility="{x:Bind InstallButtonVisibility}"
+                                            Click="PrimaryActionButton_Click" />
+                                    </Grid>
                                 </StackPanel>
                                 <Border
                                     Grid.RowSpan="2"
                                     IsHitTestVisible="False"
                                     BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
-                                    BorderThickness="2"
+                                    BorderThickness="1"
                                     CornerRadius="8"
                                     Visibility="{x:Bind SelectionVisibility, Mode=OneWay}" />
                             </Grid>

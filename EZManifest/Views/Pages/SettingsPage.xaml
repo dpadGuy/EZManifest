@@ -126,11 +126,21 @@
             </StackPanel>
         </ScrollViewer>
 
-        <TextBlock
+        <StackPanel
+            Orientation="Horizontal"
+            Spacing="10"
             Margin="14"
             HorizontalAlignment="Right"
-            VerticalAlignment="Bottom"
-            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-            Text="{x:Bind ViewModel.AppVersion, Mode=OneWay}" />
+            VerticalAlignment="Bottom">
+            <HyperlinkButton
+                Content="GitHub"
+                NavigateUri="https://github.com/dpadGuy/EZManifest"
+                Padding="0"
+                VerticalAlignment="Center" />
+            <TextBlock
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                Text="{x:Bind ViewModel.AppVersion, Mode=OneWay}"
+                VerticalAlignment="Center" />
+        </StackPanel>
     </Grid>
 </Page>

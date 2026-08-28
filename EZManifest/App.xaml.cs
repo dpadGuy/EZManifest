@@ -68,12 +68,14 @@ public partial class App : Application
         services.AddSingleton<DebugLogService>();
         services.AddSingleton<GameLibraryService>();
         services.AddSingleton<LuaManifestParser>();
-        services.AddSingleton<GoldbergPatchService>();
+        services.AddSingleton<PostDownloadService>();
         services.AddSingleton<ManifestArchiveService>();
         services.AddSingleton<SteamMetadataService>();
         services.AddSingleton<SteamDepotMetadataService>();
         services.AddSingleton<GameInstallPathService>();
         services.AddSingleton<GameUninstallService>();
+        services.AddSingleton<ShortcutService>();
+        services.AddSingleton<CoverArtCache>();
 
         services.AddSingleton<SettingsViewModel>();
         services.AddSingleton<MainWindow>();

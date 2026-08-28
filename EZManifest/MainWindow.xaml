@@ -36,7 +36,7 @@
                 Grid.Column="0"
                 Margin="16,0,0,0"
                 Orientation="Horizontal"
-                Spacing="10"
+                Spacing="6"
                 VerticalAlignment="Center">
                 <Image
                     Width="20"
@@ -48,20 +48,47 @@
                     VerticalAlignment="Center"
                     Style="{StaticResource CaptionTextBlockStyle}"
                     Text="EZManifest" />
+                <TextBlock
+                    x:Name="LibraryCountTextBlock"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="" />
             </StackPanel>
 
-            <AutoSuggestBox
-                x:Name="TitleBarSearchBox"
+            <StackPanel
+                x:Name="TitleBarSearchPanel"
                 Grid.Column="2"
-                Width="420"
-                MinWidth="240"
-                MaxWidth="520"
+                Orientation="Horizontal"
+                Spacing="8"
                 VerticalAlignment="Center"
-                PlaceholderText="Search..."
-                QueryIcon="Find"
                 Visibility="Collapsed"
-                TextChanged="TitleBarSearchBox_TextChanged"
-                SizeChanged="TitleBarSearchBox_SizeChanged" />
+                SizeChanged="TitleBarSearchPanel_SizeChanged">
+                <AutoSuggestBox
+                    x:Name="TitleBarSearchBox"
+                    Width="380"
+                    MinWidth="200"
+                    MaxWidth="480"
+                    VerticalAlignment="Center"
+                    PlaceholderText="Search..."
+                    QueryIcon="Find"
+                    TextChanged="TitleBarSearchBox_TextChanged" />
+                <DropDownButton
+                    x:Name="LibraryFilterButton"
+                    VerticalAlignment="Center"
+                    Content="Filter"
+                    ToolTipService.ToolTip="Library filter">
+                    <DropDownButton.Flyout>
+                        <Flyout Placement="Bottom">
+                            <CheckBox
+                                x:Name="ShowDownloadedOnlyCheckBox"
+                                Content="Show downloaded only"
+                                Checked="ShowDownloadedOnlyCheckBox_Changed"
+                                Unchecked="ShowDownloadedOnlyCheckBox_Changed" />
+                        </Flyout>
+                    </DropDownButton.Flyout>
+                </DropDownButton>
+            </StackPanel>
         </Grid>
 
         <NavigationView
@@ -103,7 +130,18 @@
                     Margin="24"
                     VerticalAlignment="Bottom"
                     IsClosable="True"
-                    IsOpen="False" />
+                    IsOpen="False"
+                    Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                    <InfoBar.Resources>
+                        <!-- Match Play green for Informational; opaque base fill so library art does not show through. -->
+                        <SolidColorBrush x:Key="InfoBarInformationalSeverityIconBackground" Color="#0F9D58" />
+                        <SolidColorBrush x:Key="InfoBarInformationalSeverityIconForeground" Color="White" />
+                        <StaticResource x:Key="InfoBarInformationalSeverityBackground" ResourceKey="SolidBackgroundFillColorBaseBrush" />
+                        <StaticResource x:Key="InfoBarSuccessSeverityBackground" ResourceKey="SolidBackgroundFillColorBaseBrush" />
+                        <StaticResource x:Key="InfoBarWarningSeverityBackground" ResourceKey="SolidBackgroundFillColorBaseBrush" />
+                        <StaticResource x:Key="InfoBarErrorSeverityBackground" ResourceKey="SolidBackgroundFillColorBaseBrush" />
+                    </InfoBar.Resources>
+                </InfoBar>
             </Grid>
         </NavigationView>
     </Grid>

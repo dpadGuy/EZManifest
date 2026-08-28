@@ -7,15 +7,18 @@ public sealed class GameUninstallService
     private readonly AppSettingsService _settingsService;
     private readonly GameInstallPathService _installPathService;
     private readonly GameLibraryService _gameLibrary;
+    private readonly ShortcutService _shortcutService;
 
     public GameUninstallService(
         AppSettingsService settingsService,
         GameInstallPathService installPathService,
-        GameLibraryService gameLibrary)
+        GameLibraryService gameLibrary,
+        ShortcutService shortcutService)
     {
         _settingsService = settingsService;
         _installPathService = installPathService;
         _gameLibrary = gameLibrary;
+        _shortcutService = shortcutService;
     }
 
     public async Task UninstallAsync(GameEntry game, bool removeFromLibrary = true)
@@ -29,6 +32,9 @@ public sealed class GameUninstallService
 
         if (Directory.Exists(installDirectory))
             await Task.Run(() => Directory.Delete(installDirectory, recursive: true));
+
+        // Remove shortcut from desktop if it exists
+        _shortcutService.RemoveDesktopShortcut(game.Name);
 
         if (removeFromLibrary)
             await _gameLibrary.RemoveAsync(game.AppId);

@@ -24,6 +24,7 @@ public sealed partial class MainWindow : Window
     private readonly DebugLogService _debugLogService;
     private readonly WindowProvider _windowProvider;
     private readonly AppNavigationService _navigationService;
+    private readonly GameLibraryService _gameLibrary;
     private bool _startupInstallPromptShown;
     private bool _centeredOnStartup;
 
@@ -34,7 +35,8 @@ public sealed partial class MainWindow : Window
         AppSettingsService settingsService,
         DebugLogService debugLogService,
         WindowProvider windowProvider,
-        AppNavigationService navigationService)
+        AppNavigationService navigationService,
+        GameLibraryService gameLibrary)
     {
         _services = services;
         _messageBoxService = messageBoxService;
@@ -43,6 +45,7 @@ public sealed partial class MainWindow : Window
         _debugLogService = debugLogService;
         _windowProvider = windowProvider;
         _navigationService = navigationService;
+        _gameLibrary = gameLibrary;
 
         InitializeComponent();
 
@@ -50,6 +53,8 @@ public sealed partial class MainWindow : Window
 
         _windowProvider.SetWindow(this);
         _navigationService.Register(NavigateTo);
+        RefreshService.OnListRefreshRequested += HandleRefresh;
+        _ = UpdateLibraryCountAsync();
         AppLog.Write("EZManifest started.");
 
         ExtendsContentIntoTitleBar = true;
@@ -78,12 +83,72 @@ public sealed partial class MainWindow : Window
                 _notificationService.Initialize(AppInfoBar, DispatcherQueue);
                 ConfigureCaptionButtonColors();
                 UpdateTitleBarPassthroughRegion();
+                await LoadLibraryFilterSettingAsync();
                 await PromptForInstallLocationIfNeededAsync();
+                await UpdateLibraryCountAsync();
             };
         }
 
         RootNavigation.SelectedItem = RootNavigation.MenuItems[0];
         NavigateTo("Library");
+    }
+
+    private async Task LoadLibraryFilterSettingAsync()
+    {
+        try
+        {
+            var settings = await _settingsService.LoadAsync();
+            ShowDownloadedOnlyCheckBox.Checked -= ShowDownloadedOnlyCheckBox_Changed;
+            ShowDownloadedOnlyCheckBox.Unchecked -= ShowDownloadedOnlyCheckBox_Changed;
+            ShowDownloadedOnlyCheckBox.IsChecked = settings.ShowDownloadedOnly;
+            ShowDownloadedOnlyCheckBox.Checked += ShowDownloadedOnlyCheckBox_Changed;
+            ShowDownloadedOnlyCheckBox.Unchecked += ShowDownloadedOnlyCheckBox_Changed;
+
+            if (ContentFrame.Content is LibraryPage library)
+                library.SetShowDownloadedOnly(settings.ShowDownloadedOnly);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to load library filter setting");
+        }
+    }
+
+    private async void ShowDownloadedOnlyCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        bool showDownloadedOnly = ShowDownloadedOnlyCheckBox.IsChecked == true;
+
+        try
+        {
+            await _settingsService.UpdateAsync(settings => settings.ShowDownloadedOnly = showDownloadedOnly);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save library filter setting");
+        }
+
+        if (ContentFrame.Content is LibraryPage library)
+            library.SetShowDownloadedOnly(showDownloadedOnly);
+    }
+
+    private void HandleRefresh()
+    {
+        DispatcherQueue.TryEnqueue(() => _ = UpdateLibraryCountAsync());
+    }
+
+    private async Task UpdateLibraryCountAsync()
+    {
+        try
+        {
+            var games = await _gameLibrary.LoadAsync();
+            int count = games.Count;
+            string text = $"({count} game{(count == 1 ? "" : "s")} in library)";
+            LibraryCountTextBlock.Text = text;
+            ToolTipService.SetToolTip(LibraryCountTextBlock, text);
+        }
+        catch
+        {
+            // Ignore if busy
+        }
     }
 
     private void ApplyMinimumWindowSize()
@@ -231,11 +296,14 @@ public sealed partial class MainWindow : Window
         ContentFrame.Content = page;
         SelectNavigationItem(tag);
 
-        TitleBarSearchBox.Visibility = page is LibraryPage ? Visibility.Visible : Visibility.Collapsed;
+        TitleBarSearchPanel.Visibility = page is LibraryPage ? Visibility.Visible : Visibility.Collapsed;
         UpdateTitleBarPassthroughRegion();
 
         if (page is LibraryPage library)
+        {
+            library.SetShowDownloadedOnly(ShowDownloadedOnlyCheckBox.IsChecked == true);
             library.ApplySearchFilter(TitleBarSearchBox.Text);
+        }
     }
 
     private void SelectNavigationItem(string tag)
@@ -265,7 +333,7 @@ public sealed partial class MainWindow : Window
     private void AppTitleBar_SizeChanged(object sender, SizeChangedEventArgs e) =>
         UpdateTitleBarPassthroughRegion();
 
-    private void TitleBarSearchBox_SizeChanged(object sender, SizeChangedEventArgs e) =>
+    private void TitleBarSearchPanel_SizeChanged(object sender, SizeChangedEventArgs e) =>
         UpdateTitleBarPassthroughRegion();
 
     private void UpdateTitleBarPassthroughRegion()
@@ -275,20 +343,20 @@ public sealed partial class MainWindow : Window
 
         var nonClient = InputNonClientPointerSource.GetForWindowId(AppWindow.Id);
 
-        if (TitleBarSearchBox.Visibility != Visibility.Visible ||
-            TitleBarSearchBox.ActualWidth <= 0 ||
-            TitleBarSearchBox.ActualHeight <= 0)
+        if (TitleBarSearchPanel.Visibility != Visibility.Visible ||
+            TitleBarSearchPanel.ActualWidth <= 0 ||
+            TitleBarSearchPanel.ActualHeight <= 0)
         {
             nonClient.ClearRegionRects(NonClientRegionKind.Passthrough);
             return;
         }
 
-        GeneralTransform transform = TitleBarSearchBox.TransformToVisual(null);
+        GeneralTransform transform = TitleBarSearchPanel.TransformToVisual(null);
         Rect bounds = transform.TransformBounds(new Rect(
             0,
             0,
-            TitleBarSearchBox.ActualWidth,
-            TitleBarSearchBox.ActualHeight));
+            TitleBarSearchPanel.ActualWidth,
+            TitleBarSearchPanel.ActualHeight));
 
         var rect = new RectInt32(
             (int)Math.Round(bounds.X * scale),

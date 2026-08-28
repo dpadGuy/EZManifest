@@ -155,7 +155,7 @@
                             TextAlignment="Center"
                             FontSize="12"
                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                            Text="One .zip only (file picker or drag and drop)" />
+                            Text="One .zip or folder (file picker or drag and drop)" />
                     </StackPanel>
                     <StackPanel HorizontalAlignment="Center" Spacing="4">
                         <Button
@@ -167,7 +167,7 @@
                             TextAlignment="Center"
                             FontSize="12"
                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                            Text="Multiple .zip files only (file picker or drag and drop)" />
+                            Text="Multiple .zip files or folders (picker / drag and drop)" />
                     </StackPanel>
                 </StackPanel>
                 <TextBlock
@@ -179,7 +179,7 @@
                     TextWrapping="WrapWholeWords"
                     Visibility="Collapsed"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="Drop .zip manifest archives here&#x0a;Each archive must contain a .lua file" />
+                    Text="Drop .zip archives or folders here&#x0a;Each must contain a .lua file" />
             </StackPanel>
         </Border>
 

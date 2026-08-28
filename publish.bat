@@ -29,6 +29,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
+start "" explorer.exe "%OUT%"
+
 echo.
 echo Done: "%OUT%\EZManifest.exe"
 endlocal

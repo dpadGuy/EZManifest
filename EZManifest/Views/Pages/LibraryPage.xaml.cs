@@ -8,17 +8,28 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.System;
 
 namespace EZManifest.Views.Pages;
 
 public sealed partial class LibraryPage : Page
 {
+    public static readonly DependencyProperty CoverArtHeightProperty =
+        DependencyProperty.Register(
+            nameof(CoverArtHeight),
+            typeof(double),
+            typeof(LibraryPage),
+            new PropertyMetadata(270.0));
+
     private readonly GameLibraryService _gameLibrary;
     private readonly GameUninstallService _uninstallService;
     private readonly AppMessageBoxService _messageBoxService;
     private readonly GameInstallPathService _installPathService;
-    private readonly GoldbergPatchService _goldbergPatchService;
+    private readonly PostDownloadService _postDownloadService;
+    private readonly ShortcutService _shortcutService;
+    private readonly CoverArtCache _coverArtCache;
+    private readonly AppNotificationService _notifications;
     private readonly AppNavigationService _navigation;
     private readonly IServiceProvider _services;
     private readonly HashSet<string> _selectedAppIds = new(StringComparer.OrdinalIgnoreCase);
@@ -28,17 +39,28 @@ public sealed partial class LibraryPage : Page
     private int _loadVersion;
     private Task? _loadTask;
     private string _searchQuery = string.Empty;
+    private bool _showDownloadedOnly;
     private int _selectionAnchorIndex = -1;
 
     public ObservableCollection<GameEntry> AppsList { get; } = new();
     public ObservableCollection<GameEntry> FilteredApps { get; } = new();
+
+    /// <summary>2:3 cover height from column width — updated on window resize only.</summary>
+    public double CoverArtHeight
+    {
+        get => (double)GetValue(CoverArtHeightProperty);
+        set => SetValue(CoverArtHeightProperty, value);
+    }
 
     public LibraryPage(
         GameLibraryService gameLibrary,
         GameUninstallService uninstallService,
         AppMessageBoxService messageBoxService,
         GameInstallPathService installPathService,
-        GoldbergPatchService goldbergPatchService,
+        PostDownloadService postDownloadService,
+        ShortcutService shortcutService,
+        CoverArtCache coverArtCache,
+        AppNotificationService notifications,
         AppNavigationService navigation,
         IServiceProvider services)
     {
@@ -46,7 +68,10 @@ public sealed partial class LibraryPage : Page
         _uninstallService = uninstallService;
         _messageBoxService = messageBoxService;
         _installPathService = installPathService;
-        _goldbergPatchService = goldbergPatchService;
+        _postDownloadService = postDownloadService;
+        _shortcutService = shortcutService;
+        _coverArtCache = coverArtCache;
+        _notifications = notifications;
         _navigation = navigation;
         _services = services;
 
@@ -57,6 +82,8 @@ public sealed partial class LibraryPage : Page
 
     private void LibraryPage_Loaded(object sender, RoutedEventArgs e)
     {
+        UpdateCoverArtHeight(LibraryScroll.ActualWidth);
+
         // Avoid the double hitch: only load on first show, or when a refresh was requested
         // while we were on another page.
         if (!_hasLoaded || _refreshPending)
@@ -67,6 +94,52 @@ public sealed partial class LibraryPage : Page
     {
         // Keep RefreshService subscription: this page is a singleton and must
         // still refresh while another nav page is visible.
+    }
+
+    /// <summary>Attach a cached downscaled cover while the card is realized.</summary>
+    private void GamesGrid_ElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
+    {
+        if (FindCoverImage(args.Element) is not Image cover)
+            return;
+
+        if (args.Element is FrameworkElement { Tag: GameEntry game } && game.HasCoverArt)
+        {
+            cover.Source = _coverArtCache.GetOrCreate(game.Image);
+            return;
+        }
+
+        cover.Source = null;
+    }
+
+    /// <summary>Detach from the Image only — bitmap stays in the LRU for fast revisit.</summary>
+    private void GamesGrid_ElementClearing(ItemsRepeater sender, ItemsRepeaterElementClearingEventArgs args)
+    {
+        if (FindCoverImage(args.Element) is Image cover)
+            cover.Source = null;
+    }
+
+    private static Image? FindCoverImage(UIElement element) =>
+        element is FrameworkElement root ? root.FindName("CoverImage") as Image : null;
+
+    private void LibraryScroll_SizeChanged(object sender, SizeChangedEventArgs e) =>
+        UpdateCoverArtHeight(e.NewSize.Width);
+
+    private void UpdateCoverArtHeight(double viewportWidth)
+    {
+        double width = GamesGrid.ActualWidth;
+        if (width <= 0)
+            width = viewportWidth > 16 ? viewportWidth - 16 : viewportWidth;
+
+        if (width <= 0)
+            return;
+
+        const double minItemWidth = 180;
+        const double gap = 10;
+        int columns = Math.Max(1, (int)((width + gap) / (minItemWidth + gap)));
+        double itemWidth = (width - gap * (columns - 1)) / columns;
+        double target = itemWidth * (450.0 / 300.0);
+        if (Math.Abs(CoverArtHeight - target) > 0.5)
+            CoverArtHeight = target;
     }
 
     private void HandleRefresh()
@@ -120,7 +193,7 @@ public sealed partial class LibraryPage : Page
                 return;
 
             SyncApps(games);
-            ApplyFilter(_searchQuery);
+            ApplyFilter();
             _hasLoaded = true;
             _refreshPending = false;
         }
@@ -164,17 +237,30 @@ public sealed partial class LibraryPage : Page
     public void ApplySearchFilter(string? query)
     {
         _searchQuery = query ?? string.Empty;
-        ApplyFilter(_searchQuery);
+        ApplyFilter();
     }
 
-    private void ApplyFilter(string? query)
+    public void SetShowDownloadedOnly(bool showDownloadedOnly)
+    {
+        if (_showDownloadedOnly == showDownloadedOnly)
+            return;
+
+        _showDownloadedOnly = showDownloadedOnly;
+        ApplyFilter();
+    }
+
+    private void ApplyFilter()
     {
         IEnumerable<GameEntry> source = AppsList;
-        if (!string.IsNullOrWhiteSpace(query))
+
+        if (_showDownloadedOnly)
+            source = source.Where(game => game.IsInstalled);
+
+        if (!string.IsNullOrWhiteSpace(_searchQuery))
         {
-            source = AppsList.Where(game =>
-                game.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                game.AppId.Contains(query, StringComparison.OrdinalIgnoreCase));
+            source = source.Where(game =>
+                game.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ||
+                game.AppId.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
         }
 
         var filtered = source.ToList();
@@ -243,27 +329,6 @@ public sealed partial class LibraryPage : Page
         await PlayGameAsync(game);
     }
 
-    private void CoverArt_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (sender is not Border cover)
-            return;
-
-        // Steam vertical covers are 300×450 → keep 2:3 as the card width changes.
-        double width = e.NewSize.Width;
-        if (width <= 0)
-            return;
-
-        double targetHeight = width * (450.0 / 300.0);
-        // Default Height is NaN (Auto); Abs(NaN - x) is NaN, so the old check never applied.
-        if (double.IsNaN(cover.Height) || Math.Abs(cover.Height - targetHeight) > 0.5)
-            cover.Height = targetHeight;
-
-        cover.Clip = new RectangleGeometry
-        {
-            Rect = new Windows.Foundation.Rect(0, 0, width, targetHeight)
-        };
-    }
-
     private void Card_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (e.GetCurrentPoint(null).Properties.IsRightButtonPressed)
@@ -306,9 +371,13 @@ public sealed partial class LibraryPage : Page
         }
         else
         {
-            flyout.Items.Add(CreateMenuItem("Open install location", game, OpenInstallLocationMenuItem_Click));
-            flyout.Items.Add(CreateMenuItem("Change default executable", game, ChangeDefaultExecutableMenuItem_Click));
-            flyout.Items.Add(CreateMenuItem("Patch with Goldberg", game, PatchWithGoldbergButton_Click));
+            bool isInstalled = game.IsInstalled;
+            flyout.Items.Add(CreateMenuItem("Open install location", game, OpenInstallLocationMenuItem_Click, isInstalled));
+            flyout.Items.Add(CreateMenuItem("Create desktop shortcut", game, CreateDesktopShortcutMenuItem_Click, isInstalled));
+            flyout.Items.Add(CreateMenuItem("Change default executable", game, ChangeDefaultExecutableMenuItem_Click, isInstalled));
+            flyout.Items.Add(CreateMenuItem("Remove Steam DRM", game, RemoveSteamDrmMenuItem_Click, isInstalled));
+            flyout.Items.Add(new MenuFlyoutSeparator());
+            flyout.Items.Add(CreateMenuItem("Visit store page", game, VisitStorePageMenuItem_Click));
             flyout.Items.Add(new MenuFlyoutSeparator());
             flyout.Items.Add(CreateMenuItem("Uninstall", game, UninstallMenuItem_Click));
         }
@@ -317,9 +386,9 @@ public sealed partial class LibraryPage : Page
         e.Handled = true;
     }
 
-    private static MenuFlyoutItem CreateMenuItem(string text, GameEntry game, RoutedEventHandler click)
+    private static MenuFlyoutItem CreateMenuItem(string text, GameEntry game, RoutedEventHandler click, bool isEnabled = true)
     {
-        var item = new MenuFlyoutItem { Text = text, Tag = game };
+        var item = new MenuFlyoutItem { Text = text, Tag = game, IsEnabled = isEnabled };
         item.Click += click;
         return item;
     }
@@ -359,7 +428,10 @@ public sealed partial class LibraryPage : Page
                 return;
 
             foreach (var game in libraryOnly)
+            {
+                _shortcutService.RemoveDesktopShortcut(game.Name);
                 await _gameLibrary.RemoveAsync(game.AppId);
+            }
         }
 
         foreach (var game in installed)
@@ -702,7 +774,62 @@ public sealed partial class LibraryPage : Page
         });
     }
 
-    private async void PatchWithGoldbergButton_Click(object sender, RoutedEventArgs e)
+    private async void CreateDesktopShortcutMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetGameEntry(sender) is not GameEntry game)
+            return;
+
+        string gameFolder = await ResolveGameFolderAsync(game);
+        bool folderExists = !string.IsNullOrWhiteSpace(gameFolder) &&
+            await Task.Run(() => Directory.Exists(gameFolder));
+
+        if (!folderExists)
+        {
+            await _messageBoxService.ShowAsync(
+                "Game not installed",
+                $"Could not find the install folder for {game.Name}.");
+            return;
+        }
+
+        string? startLocation = game.StartLocation;
+        if (string.IsNullOrWhiteSpace(startLocation) || !File.Exists(startLocation))
+        {
+            string? picked = await PickGameExecutableAsync(game, gameFolder);
+            if (string.IsNullOrWhiteSpace(picked))
+                return;
+
+            startLocation = picked;
+            game.StartLocation = startLocation;
+            if (string.IsNullOrWhiteSpace(game.InstallPath) && !string.IsNullOrWhiteSpace(gameFolder))
+                game.InstallPath = gameFolder;
+
+            await _gameLibrary.SaveAsync(AppsList);
+        }
+
+        try
+        {
+            string exePath = Path.GetFullPath(startLocation);
+            string workingDirectory = Path.GetDirectoryName(exePath) ?? gameFolder;
+            string shortcutPath = _shortcutService.CreateDesktopShortcut(
+                exePath,
+                game.Name,
+                workingDirectory,
+                game.Name);
+
+            AppLog.Write($"[Library] Desktop shortcut created for '{game.Name}' → {shortcutPath}");
+            _notifications.Show(
+                "Shortcut created",
+                $"Desktop shortcut created for {game.Name}.",
+                InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, $"Failed to create desktop shortcut for '{game.Name}'");
+            await _messageBoxService.ShowAsync("Failed to create shortcut", ex.Message);
+        }
+    }
+
+    private async void RemoveSteamDrmMenuItem_Click(object sender, RoutedEventArgs e)
     {
         if (GetGameEntry(sender) is not GameEntry game)
             return;
@@ -718,80 +845,49 @@ public sealed partial class LibraryPage : Page
 
         try
         {
-            await _goldbergPatchService.EnsureGoldbergAsync();
+            _notifications.Show("Removing Steam DRM", $"Running DRM removal for {game.Name}...", InfoBarSeverity.Informational);
+            int exitCode = await _postDownloadService.RunPostDownloadCommandAsync(
+                game.Name,
+                game.AppId,
+                gameFolder);
 
-            IReadOnlyList<string> folders = _goldbergPatchService.FindSteamApiFolders(gameFolder);
-            if (folders.Count == 0)
+            if (exitCode == 0)
             {
                 await _messageBoxService.ShowAsync(
-                    "No Steam API found",
-                    $"No steam_api.dll or steam_api64.dll was found under:\n{gameFolder}");
-                return;
+                    "DRM Removal Complete",
+                    $"Steam DRM removal completed successfully for {game.Name}.");
             }
-
-            var checks = new List<CheckBox>(folders.Count);
-            var list = new StackPanel { Spacing = 8 };
-            list.Children.Add(new TextBlock
+            else
             {
-                Text = "Select folders to patch:",
-                TextWrapping = TextWrapping.WrapWholeWords,
-                Margin = new Thickness(0, 0, 0, 4)
-            });
-
-            foreach (string folder in folders)
-            {
-                string relative = Path.GetRelativePath(gameFolder, folder);
-                if (relative == ".")
-                    relative = "(game root)";
-
-                var check = new CheckBox
-                {
-                    Content = relative,
-                    Tag = folder,
-                    IsChecked = true,
-                    HorizontalAlignment = HorizontalAlignment.Stretch
-                };
-                checks.Add(check);
-                list.Children.Add(check);
+                await _messageBoxService.ShowAsync(
+                    "DRM Removal Finished",
+                    $"Steam DRM removal finished with exit code {exitCode} for {game.Name}.\nCheck the Debug Console for detailed logs.");
             }
-
-            var scroller = new ScrollViewer
-            {
-                Content = list,
-                MaxHeight = 360,
-                HorizontalScrollMode = ScrollMode.Disabled,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
-            };
-
-            var result = await _messageBoxService.ShowAsync(
-                $"Patch {game.Name}",
-                scroller,
-                "Patch",
-                "Cancel");
-
-            if (result != ContentDialogResult.Primary)
-                return;
-
-            var selected = checks
-                .Where(box => box.IsChecked == true && box.Tag is string)
-                .Select(box => (string)box.Tag!)
-                .ToList();
-
-            if (selected.Count == 0)
-            {
-                await _messageBoxService.ShowAsync("Nothing selected", "Select at least one folder to patch.");
-                return;
-            }
-
-            await _goldbergPatchService.PatchFoldersAsync(selected, game.AppId);
-            await _messageBoxService.ShowAsync(
-                "Patch complete",
-                $"Goldberg was applied to {selected.Count} location(s).\nOriginal DLLs were renamed to .bak.\nsteam_appid.txt was written with AppID {game.AppId}.");
         }
         catch (Exception ex)
         {
-            AppLog.Write(ex, $"Goldberg patch failed for '{game.Name}' appId={game.AppId}");
-            await _messageBoxService.ShowAsync("Patch failed", ex.Message);
+            AppLog.Write(ex, $"DRM removal failed for '{game.Name}' appId={game.AppId}");
+            await _messageBoxService.ShowAsync("DRM Removal Failed", ex.Message);
+        }
+    }
+
+    private void VisitStorePageMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetGameEntry(sender) is not GameEntry game || string.IsNullOrWhiteSpace(game.AppId))
+            return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = $"https://store.steampowered.com/app/{game.AppId}",
+                UseShellExecute = true
+            });
+            AppLog.Write($"[Library] Opening Steam store page for '{game.Name}' appId={game.AppId}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, $"Failed to open Steam store page for '{game.Name}' appId={game.AppId}");
         }
     }
 
@@ -811,6 +907,7 @@ public sealed partial class LibraryPage : Page
             if (removeResult != ContentDialogResult.Primary)
                 return;
 
+            _shortcutService.RemoveDesktopShortcut(game.Name);
             await _gameLibrary.RemoveAsync(game.AppId);
             _refreshPending = true;
             await EnsureLoadedAsync(force: true);
@@ -823,7 +920,7 @@ public sealed partial class LibraryPage : Page
     }
 
     /// <summary>
-    /// Usual uninstall flow for an installed title. Cancelling either prompt leaves the card as-is.
+    /// Usual uninstall flow for an installed title. Deletes game files and keeps the card in the library.
     /// </summary>
     private async Task UninstallInstalledGameAsync(GameEntry game)
     {
@@ -836,32 +933,19 @@ public sealed partial class LibraryPage : Page
         if (result != ContentDialogResult.Primary)
             return;
 
-        var libraryResult = await _messageBoxService.ShowAsync(
-            "Remove from library ?",
-            $"Also remove the {game.Name} card from your library ?\n\n" +
-            "Yes — delete the card.\n" +
-            "No — keep it so you can Install again later.",
-            "Yes, remove",
-            "No, keep");
-
-        bool removeFromLibrary = libraryResult == ContentDialogResult.Primary;
-
         try
         {
-            await _uninstallService.UninstallAsync(game, removeFromLibrary);
+            await _uninstallService.UninstallAsync(game, removeFromLibrary: false);
 
-            if (!removeFromLibrary)
+            await _gameLibrary.UpsertAsync(new GameEntry
             {
-                await _gameLibrary.UpsertAsync(new GameEntry
-                {
-                    AppId = game.AppId,
-                    Name = game.Name,
-                    Image = game.Image,
-                    StartLocation = string.Empty,
-                    InstallPath = string.Empty,
-                    IsInstalled = false
-                });
-            }
+                AppId = game.AppId,
+                Name = game.Name,
+                Image = game.Image,
+                StartLocation = string.Empty,
+                InstallPath = string.Empty,
+                IsInstalled = false
+            });
         }
         catch (Exception ex)
         {

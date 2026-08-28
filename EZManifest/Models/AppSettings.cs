@@ -16,4 +16,7 @@ public sealed class AppSettings
 
     /// <summary>UI theme: "Light", "Dark", or empty to follow the system.</summary>
     public string Theme { get; set; } = string.Empty;
+
+    /// <summary>When true, library shows only installed/downloaded games.</summary>
+    public bool ShowDownloadedOnly { get; set; }
 }

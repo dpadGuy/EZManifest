@@ -8,10 +8,26 @@ namespace EZManifest.Models;
 public sealed class GameEntry : INotifyPropertyChanged
 {
     private bool _isSelected;
+    private string _image = string.Empty;
+    private bool? _hasCoverArt;
 
     public string AppId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
-    public string Image { get; set; } = string.Empty;
+
+    public string Image
+    {
+        get => _image;
+        set
+        {
+            string next = value ?? string.Empty;
+            if (string.Equals(_image, next, StringComparison.Ordinal))
+                return;
+
+            _image = next;
+            _hasCoverArt = null;
+        }
+    }
+
     public string StartLocation { get; set; } = string.Empty;
     /// <summary>Install folder for this game (where files are downloaded).</summary>
     public string InstallPath { get; set; } = string.Empty;
@@ -21,6 +37,14 @@ public sealed class GameEntry : INotifyPropertyChanged
     /// <summary>Play when installed; Install when the title is library-only.</summary>
     [JsonIgnore]
     public string PrimaryActionText => IsInstalled ? "Play" : "Install";
+
+    [JsonIgnore]
+    public Visibility PlayButtonVisibility =>
+        IsInstalled ? Visibility.Visible : Visibility.Collapsed;
+
+    [JsonIgnore]
+    public Visibility InstallButtonVisibility =>
+        IsInstalled ? Visibility.Collapsed : Visibility.Visible;
 
     /// <summary>Larger type for short names; smaller so long titles still fit the card.</summary>
     [JsonIgnore]
@@ -41,7 +65,7 @@ public sealed class GameEntry : INotifyPropertyChanged
 
     [JsonIgnore]
     public bool HasCoverArt =>
-        !string.IsNullOrWhiteSpace(Image) && File.Exists(Image);
+        _hasCoverArt ??= !string.IsNullOrWhiteSpace(Image) && File.Exists(Image);
 
     [JsonIgnore]
     public Visibility CoverArtVisibility =>
