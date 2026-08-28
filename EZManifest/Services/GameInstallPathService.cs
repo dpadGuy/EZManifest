@@ -14,8 +14,11 @@ public sealed class GameInstallPathService
         return Path.Combine(downloadRoot, $"{safeTitle} - {appId}");
     }
 
-    private static string SanitizeDirectoryName(string value)
+    private static string SanitizeDirectoryName(string? value)
     {
+        if (string.IsNullOrWhiteSpace(value))
+            return "Steam Game";
+
         char[] invalidCharacters = Path.GetInvalidFileNameChars();
         string sanitized = new(value
             .Select(character => invalidCharacters.Contains(character) ? '_' : character)

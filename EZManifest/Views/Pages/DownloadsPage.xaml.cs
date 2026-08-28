@@ -589,20 +589,22 @@ public sealed partial class DownloadsPage : Page
             .Any(g => string.Equals(g.AppId, _appId, StringComparison.OrdinalIgnoreCase));
         _preserveLibraryOnCancel = alreadyInLibrary;
 
-        if (alreadyInLibrary)
-        {
-            try
+            if (alreadyInLibrary)
             {
-                _currentGameName = await _steamMetadata.GetGameNameAsync(_appId);
-            }
-            catch (Exception ex)
-            {
-                AppLog.Write(ex, "Resolve game name for existing library title failed");
-            }
+                try
+                {
+                    string? resolvedName = await _steamMetadata.GetGameNameAsync(_appId);
+                    if (!string.IsNullOrWhiteSpace(resolvedName))
+                        _currentGameName = resolvedName;
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Write(ex, "Resolve game name for existing library title failed");
+                }
 
-            AppLog.Write(
-                $"[Downloads] App {_appId} already in library — will preserve entry on cancel");
-        }
+                AppLog.Write(
+                    $"[Downloads] App {_appId} already in library — will preserve entry on cancel");
+            }
         else
         {
             await AddSteamGameToLibraryAsync(_appId, archive.CoverArtPath, isInstalled: false);
@@ -622,15 +624,15 @@ public sealed partial class DownloadsPage : Page
         try
         {
             string gameName = await _steamMetadata.GetGameNameAsync(appId);
-            _currentGameName = gameName;
-            AppLog.Write($"[Downloads] Resolved game name appId={appId} → '{gameName}'");
+            _currentGameName = string.IsNullOrWhiteSpace(gameName) ? $"Steam App {appId}" : gameName;
+            AppLog.Write($"[Downloads] Resolved game name appId={appId} → '{_currentGameName}'");
             string installPath = isInstalled
-                ? await _installPathService.GetInstallDirectoryAsync(gameName, appId)
+                ? await _installPathService.GetInstallDirectoryAsync(_currentGameName, appId)
                 : string.Empty;
             await _gameLibrary.UpsertAsync(new GameEntry
             {
                 AppId = appId,
-                Name = gameName,
+                Name = _currentGameName,
                 Image = coverArt,
                 StartLocation = string.Empty,
                 InstallPath = installPath,
@@ -1277,12 +1279,18 @@ public sealed partial class DownloadsPage : Page
             AppLog.Write(
                 $"[Downloads] Cleanup after cancel appId={appId} game='{gameName}' " +
                 $"dest={downloadDest ?? "(unset)"} preserveLibrary={preserveLibrary}");
+
+            // Only delete a folder this download session created. Never resolve a fallback
+            // install path when preserving a library title — that can wipe an existing install
+            // or NRE on a null game name.
             string installPath = downloadDest ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(installPath))
+            if (!preserveLibrary && string.IsNullOrWhiteSpace(installPath))
             {
                 try
                 {
-                    installPath = await _installPathService.GetInstallDirectoryAsync(gameName, appId);
+                    installPath = await _installPathService.GetInstallDirectoryAsync(
+                        gameName ?? string.Empty,
+                        appId);
                 }
                 catch (Exception ex)
                 {
@@ -1303,7 +1311,7 @@ public sealed partial class DownloadsPage : Page
                             new GameEntry
                             {
                                 AppId = appId,
-                                Name = gameName,
+                                Name = gameName ?? string.Empty,
                                 InstallPath = installPath
                             },
                             removeFromLibrary: false);
