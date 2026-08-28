@@ -82,7 +82,7 @@ public sealed partial class LibraryPage : Page
 
     private void LibraryPage_Loaded(object sender, RoutedEventArgs e)
     {
-        UpdateCoverArtHeight(LibraryScroll.ActualWidth);
+        UpdateCoverArtHeight(LibraryScroll.ViewportWidth > 0 ? LibraryScroll.ViewportWidth : LibraryScroll.ActualWidth);
 
         // Avoid the double hitch: only load on first show, or when a refresh was requested
         // while we were on another page.
@@ -122,24 +122,39 @@ public sealed partial class LibraryPage : Page
         element is FrameworkElement root ? root.FindName("CoverImage") as Image : null;
 
     private void LibraryScroll_SizeChanged(object sender, SizeChangedEventArgs e) =>
-        UpdateCoverArtHeight(e.NewSize.Width);
+        UpdateCoverArtHeight(LibraryScroll.ViewportWidth > 0 ? LibraryScroll.ViewportWidth : e.NewSize.Width);
 
     private void UpdateCoverArtHeight(double viewportWidth)
     {
-        double width = GamesGrid.ActualWidth;
+        // Prefer the real content width (excludes scrollbar) so Fill columns don't overflow.
+        double width = LibraryScroll.ViewportWidth;
+        if (width <= 0)
+            width = GamesGrid.ActualWidth;
         if (width <= 0)
             width = viewportWidth > 16 ? viewportWidth - 16 : viewportWidth;
 
         if (width <= 0)
             return;
 
+        // Match GamesGrid right margin so column math matches UniformGridLayout.
+        width = Math.Max(1, width - 16);
+
         const double minItemWidth = 180;
         const double gap = 10;
         int columns = Math.Max(1, (int)((width + gap) / (minItemWidth + gap)));
         double itemWidth = (width - gap * (columns - 1)) / columns;
-        double target = itemWidth * (450.0 / 300.0);
+        // Cap cover height so a single row can't dominate the viewport and clip buttons.
+        double target = Math.Min(itemWidth * (450.0 / 300.0), Math.Max(180, LibraryScroll.ViewportHeight * 0.55));
+        if (LibraryScroll.ViewportHeight <= 0)
+            target = itemWidth * (450.0 / 300.0);
+
         if (Math.Abs(CoverArtHeight - target) > 0.5)
+        {
             CoverArtHeight = target;
+            // Cover height feeds item size — force repeater to remeasure scroll extent.
+            GamesGrid.InvalidateMeasure();
+            GamesGrid.InvalidateArrange();
+        }
     }
 
     private void HandleRefresh()
