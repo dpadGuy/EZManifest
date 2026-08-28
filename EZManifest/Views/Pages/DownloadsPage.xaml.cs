@@ -38,6 +38,8 @@ public sealed partial class DownloadsPage : Page
     private int _dragDepth;
     private int _importBusy;
     private bool _preserveLibraryOnCancel;
+    private bool _wasInstalledBeforeDownload;
+    private string _installPathBeforeDownload = string.Empty;
 
     public ObservableCollection<DownloadItem> Downloads { get; } = new();
 
@@ -403,6 +405,8 @@ public sealed partial class DownloadsPage : Page
             ? string.Empty
             : Path.Combine(Path.GetDirectoryName(game.Image) ?? string.Empty, "GameLogo.png");
         _preserveLibraryOnCancel = true;
+        _wasInstalledBeforeDownload = game.IsInstalled;
+        _installPathBeforeDownload = game.InstallPath ?? string.Empty;
 
         AppLog.Write($"[Downloads] Install from library appId={_appId} dir={_finalPath}");
         await ManifestDepotIdChoiceAsync(luaPath, removeFromLibraryOnCancel: false);
@@ -585,28 +589,34 @@ public sealed partial class DownloadsPage : Page
         await _steamMetadata.DownloadArtworkAsync(_appId, archive.LogoPath, archive.CoverArtPath);
 
         // If the title was already in the library, keep it there on cancel / depot dismiss.
-        bool alreadyInLibrary = (await _gameLibrary.LoadAsync())
-            .Any(g => string.Equals(g.AppId, _appId, StringComparison.OrdinalIgnoreCase));
+        var existing = (await _gameLibrary.LoadAsync())
+            .FirstOrDefault(g => string.Equals(g.AppId, _appId, StringComparison.OrdinalIgnoreCase));
+        bool alreadyInLibrary = existing is not null;
         _preserveLibraryOnCancel = alreadyInLibrary;
+        _wasInstalledBeforeDownload = existing?.IsInstalled ?? false;
+        _installPathBeforeDownload = existing?.InstallPath ?? string.Empty;
 
-            if (alreadyInLibrary)
+        if (alreadyInLibrary)
+        {
+            try
             {
-                try
-                {
-                    string? resolvedName = await _steamMetadata.GetGameNameAsync(_appId);
-                    if (!string.IsNullOrWhiteSpace(resolvedName))
-                        _currentGameName = resolvedName;
-                }
-                catch (Exception ex)
-                {
-                    AppLog.Write(ex, "Resolve game name for existing library title failed");
-                }
-
-                AppLog.Write(
-                    $"[Downloads] App {_appId} already in library — will preserve entry on cancel");
+                string? resolvedName = await _steamMetadata.GetGameNameAsync(_appId);
+                if (!string.IsNullOrWhiteSpace(resolvedName))
+                    _currentGameName = resolvedName;
             }
+            catch (Exception ex)
+            {
+                AppLog.Write(ex, "Resolve game name for existing library title failed");
+            }
+
+            AppLog.Write(
+                $"[Downloads] App {_appId} already in library — will preserve entry on cancel " +
+                $"(wasInstalled={_wasInstalledBeforeDownload})");
+        }
         else
         {
+            _wasInstalledBeforeDownload = false;
+            _installPathBeforeDownload = string.Empty;
             await AddSteamGameToLibraryAsync(_appId, archive.CoverArtPath, isInstalled: false);
         }
 
@@ -1072,10 +1082,13 @@ public sealed partial class DownloadsPage : Page
 
         Downloads.Add(downloadItem);
         bool preserveLibraryOnCancel = _preserveLibraryOnCancel;
+        bool wasInstalledBeforeDownload = _wasInstalledBeforeDownload;
+        string installPathBeforeDownload = _installPathBeforeDownload;
         AppLog.Write(
             $"[Downloads] Queued download '{_currentGameName}' appId={_appId} " +
             $"selectedDepots={selectedDepots.Count} ids=[{string.Join(", ", selectedDepots.Select(d => d.DepotId))}] " +
-            $"preserveLibraryOnCancel={preserveLibraryOnCancel} executePostDownload={executePostDownload}");
+            $"preserveLibraryOnCancel={preserveLibraryOnCancel} wasInstalledBefore={wasInstalledBeforeDownload} " +
+            $"executePostDownload={executePostDownload}");
 
         var progressReporter = new Progress<DownloadProgress>(progress =>
         {
@@ -1221,7 +1234,9 @@ public sealed partial class DownloadsPage : Page
                     cancelledGameName,
                     cancelledCoverArt,
                     downloadDest,
-                    preserveLibraryOnCancel);
+                    preserveLibraryOnCancel,
+                    wasInstalledBeforeDownload,
+                    installPathBeforeDownload);
 
                 DispatcherQueue.TryEnqueue(() =>
                 {
@@ -1272,17 +1287,17 @@ public sealed partial class DownloadsPage : Page
         string gameName,
         string coverArt,
         string? downloadDest,
-        bool preserveLibrary)
+        bool preserveLibrary,
+        bool wasInstalledBefore,
+        string installPathBefore)
     {
         try
         {
             AppLog.Write(
                 $"[Downloads] Cleanup after cancel appId={appId} game='{gameName}' " +
-                $"dest={downloadDest ?? "(unset)"} preserveLibrary={preserveLibrary}");
+                $"dest={downloadDest ?? "(unset)"} preserveLibrary={preserveLibrary} " +
+                $"wasInstalledBefore={wasInstalledBefore}");
 
-            // Only delete a folder this download session created. Never resolve a fallback
-            // install path when preserving a library title — that can wipe an existing install
-            // or NRE on a null game name.
             string installPath = downloadDest ?? string.Empty;
             if (!preserveLibrary && string.IsNullOrWhiteSpace(installPath))
             {
@@ -1299,8 +1314,18 @@ public sealed partial class DownloadsPage : Page
                 }
             }
 
-            // Retry briefly — cancel can leave file handles open for a moment.
-            if (!string.IsNullOrWhiteSpace(installPath) && Directory.Exists(installPath))
+            bool isPriorInstallFolder = wasInstalledBefore
+                && !string.IsNullOrWhiteSpace(installPath)
+                && !string.IsNullOrWhiteSpace(installPathBefore)
+                && string.Equals(
+                    Path.GetFullPath(installPath),
+                    Path.GetFullPath(installPathBefore),
+                    StringComparison.OrdinalIgnoreCase);
+
+            // Delete this session's partial download folder, but never wipe a prior install.
+            if (!string.IsNullOrWhiteSpace(installPath)
+                && Directory.Exists(installPath)
+                && !isPriorInstallFolder)
             {
                 for (int attempt = 0; attempt < 5; attempt++)
                 {
@@ -1330,11 +1355,28 @@ public sealed partial class DownloadsPage : Page
                     }
                 }
             }
+            else if (isPriorInstallFolder)
+            {
+                AppLog.Write(
+                    $"[Downloads] Cleanup: leaving prior install folder untouched path={installPath}");
+            }
 
             if (preserveLibrary)
             {
-                // Title was already in the library before this download — leave the entry alone.
-                AppLog.Write($"[Downloads] Cleanup: preserving existing library entry appId={appId}");
+                // Restore pre-download library state so library-only titles show Install again
+                // (not Play from a leftover InstallPath / empty folder migration).
+                await _gameLibrary.UpsertAsync(new GameEntry
+                {
+                    AppId = appId,
+                    Name = string.IsNullOrWhiteSpace(gameName) ? $"Steam App {appId}" : gameName,
+                    Image = coverArt,
+                    StartLocation = string.Empty,
+                    InstallPath = wasInstalledBefore ? installPathBefore : string.Empty,
+                    IsInstalled = wasInstalledBefore
+                });
+                AppLog.Write(
+                    $"[Downloads] Cleanup: restored library entry appId={appId} " +
+                    $"IsInstalled={wasInstalledBefore}");
             }
             else if (!string.IsNullOrWhiteSpace(appId))
             {
@@ -1351,7 +1393,15 @@ public sealed partial class DownloadsPage : Page
             {
                 if (preserveLibrary)
                 {
-                    AppLog.Write($"[Downloads] Cleanup error path: preserving library entry appId={appId}");
+                    await _gameLibrary.UpsertAsync(new GameEntry
+                    {
+                        AppId = appId,
+                        Name = string.IsNullOrWhiteSpace(gameName) ? $"Steam App {appId}" : gameName,
+                        Image = coverArt,
+                        StartLocation = string.Empty,
+                        InstallPath = wasInstalledBefore ? installPathBefore : string.Empty,
+                        IsInstalled = wasInstalledBefore
+                    });
                 }
                 else if (!string.IsNullOrWhiteSpace(appId))
                 {

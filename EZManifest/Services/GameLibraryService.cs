@@ -27,11 +27,22 @@ public sealed class GameLibraryService
         bool changed = false;
         foreach (var game in games)
         {
-            if (!game.IsInstalled &&
-                !string.IsNullOrWhiteSpace(game.InstallPath) &&
-                Directory.Exists(game.InstallPath))
+            // Only promote to installed when the folder has content (empty dirs from a
+            // cancelled download must not flip the button to Play).
+            bool hasInstallContent = !string.IsNullOrWhiteSpace(game.InstallPath)
+                && Directory.Exists(game.InstallPath)
+                && Directory.EnumerateFileSystemEntries(game.InstallPath).Any();
+
+            if (!game.IsInstalled && hasInstallContent)
             {
                 game.IsInstalled = true;
+                changed = true;
+            }
+            else if (game.IsInstalled && !hasInstallContent)
+            {
+                // Demote stale Play state left after a cancelled / wiped install.
+                game.IsInstalled = false;
+                game.InstallPath = string.Empty;
                 changed = true;
             }
 
