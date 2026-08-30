@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using EZManifest.Models;
 using EZManifest.Services;
 using Microsoft.UI.Xaml;
@@ -75,6 +77,25 @@ public sealed partial class DownloadsPage : Page
         UpdateEmptyState();
     }
 
+    private XamlRoot ResolveDialogXamlRoot()
+    {
+        if (XamlRoot is not null)
+            return XamlRoot;
+
+        if (_windowProvider.Window.Content is FrameworkElement root && root.XamlRoot is not null)
+            return root.XamlRoot;
+
+        throw new InvalidOperationException("Main window XamlRoot is not available.");
+    }
+
+    private ElementTheme ResolveDialogTheme()
+    {
+        if (_windowProvider.Window.Content is FrameworkElement root)
+            return root.ActualTheme;
+
+        return ActualTheme;
+    }
+
     private void UpdateEmptyState()
     {
         bool empty = Downloads.Count == 0;
@@ -144,8 +165,8 @@ public sealed partial class DownloadsPage : Page
             SecondaryButtonText = "Folders",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = XamlRoot,
-            RequestedTheme = ActualTheme
+            XamlRoot = ResolveDialogXamlRoot(),
+            RequestedTheme = ResolveDialogTheme()
         };
         dialog.Resources["ContentDialogMinWidth"] = 360.0;
         dialog.Resources["ContentDialogMaxWidth"] = 520.0;
@@ -178,8 +199,8 @@ public sealed partial class DownloadsPage : Page
             SecondaryButtonText = "Add to library",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = XamlRoot,
-            RequestedTheme = ActualTheme
+            XamlRoot = ResolveDialogXamlRoot(),
+            RequestedTheme = ResolveDialogTheme()
         };
         dialog.Resources["ContentDialogMinWidth"] = 380.0;
         dialog.Resources["ContentDialogMaxWidth"] = 560.0;
@@ -266,8 +287,8 @@ public sealed partial class DownloadsPage : Page
         {
             Title = "Adding to library",
             Content = content,
-            XamlRoot = XamlRoot,
-            RequestedTheme = ActualTheme,
+            XamlRoot = ResolveDialogXamlRoot(),
+            RequestedTheme = ResolveDialogTheme(),
             CloseButtonText = "Please wait..."
         };
         dialog.Resources["ContentDialogMinWidth"] = 420.0;
@@ -662,27 +683,69 @@ public sealed partial class DownloadsPage : Page
     private async Task ManifestDepotIdChoiceAsync(string luaFilePath, bool removeFromLibraryOnCancel)
     {
         var availableItems = _manifestParser.Parse(luaFilePath);
-        var metadata = await _depotMetadata.GetDepotMetadataAsync(_appId);
+        var depotIds = availableItems.Select(item => item.DepotId).ToList();
+        var relatedAppIds = _manifestParser.ParseRelatedAppIds(luaFilePath).ToList();
+
+        var loading = new ContentDialog
+        {
+            Title = "Selecting right depots...",
+            Content = new TextBlock
+            {
+                Text = "Loading Windows depots from Steam...",
+                TextWrapping = TextWrapping.WrapWholeWords
+            },
+            XamlRoot = ResolveDialogXamlRoot(),
+            RequestedTheme = ResolveDialogTheme()
+        };
+        var loadingShow = loading.ShowAsync();
+        IReadOnlyDictionary<string, DepotMetadata> metadata;
+        try
+        {
+            string appId = _appId;
+            metadata = await Task.Run(async () =>
+                await _depotMetadata.GetDepotMetadataAsync(appId, depotIds, relatedAppIds)
+                    .ConfigureAwait(false));
+        }
+        finally
+        {
+            loading.Hide();
+            try
+            {
+                await loadingShow;
+            }
+            catch (Exception)
+            {
+            }
+        }
+
         var displayRows = BuildDepotDisplayRows(availableItems, metadata);
+        var gameRows = displayRows.Where(row => !row.Display.IsLanguage && !row.Display.IsDlc).ToList();
+        var dlcRows = displayRows
+            .Where(row => row.Display.IsDlc)
+            .OrderBy(row => DlcGroupName(row.Display), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => DlcLanguageRank(row.Display))
+            .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var languageRows = displayRows
+            .Where(row => row.Display.IsLanguage && !row.Display.IsDlc)
+            .OrderBy(row => IsEnglishLanguage(row.Display.LanguageCode) ? 0 : 1)
+            .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-        var root = new Grid
+        var executePostDownloadCheck = new CheckBox
         {
-            RowSpacing = 10,
-            HorizontalAlignment = HorizontalAlignment.Stretch
+            Content = new TextBlock
+            {
+                Text = "Remove Steam DRM",
+                Margin = new Thickness(8, 0, 0, 0)
+            },
+            IsChecked = true,
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
         };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        var titleBlock = new TextBlock
-        {
-            Text = _currentGameName,
-            FontSize = 28,
-            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-            TextWrapping = TextWrapping.NoWrap
-        };
-        Grid.SetRow(titleBlock, 0);
-        root.Children.Add(titleBlock);
 
         var appIdRow = new StackPanel
         {
@@ -704,36 +767,192 @@ public sealed partial class DownloadsPage : Page
             Padding = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center
         });
-        var executePostDownloadCheck = new CheckBox
-        {
-            Content = new TextBlock
-            {
-                Text = "Remove Steam DRM",
-                Margin = new Thickness(8, 0, 0, 0)
-            },
-            IsChecked = true,
-            MinWidth = 0,
-            MinHeight = 0,
-            Padding = new Thickness(0),
-            VerticalAlignment = VerticalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center
-        };
         appIdRow.Children.Add(executePostDownloadCheck);
-        Grid.SetRow(appIdRow, 1);
-        root.Children.Add(appIdRow);
 
-        // [check] [App ID *] [Manifest *] [DL size *] — equal category columns, centered text.
-        var table = new Grid
+        int windowsSelected = gameRows.Count(row => row.Display.AutoSelected);
+        string gameHint = windowsSelected > 0
+            ? $"Windows depots preselected ({windowsSelected}). You can change this."
+            : "No Windows depot match — all available depots are shown for you to choose.";
+
+        var gamePick = await ShowDepotRowsDialogAsync(
+            "Select game files",
+            gameHint,
+            gameRows,
+            NextOrDownload(dlcRows.Count > 0 || languageRows.Count > 0),
+            "Cancel",
+            appIdRow);
+
+        if (gamePick.Result != ContentDialogResult.Primary)
         {
-            ColumnSpacing = 16,
-            RowSpacing = 4,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Margin = new Thickness(0, 0, 16, 0)
+            if (removeFromLibraryOnCancel)
+            {
+                await _gameLibrary.RemoveAsync(_appId);
+                RefreshService.RequestRefresh();
+            }
+            return;
+        }
+
+        if (gamePick.Selected.Count == 0 && dlcRows.Count == 0)
+        {
+            if (removeFromLibraryOnCancel)
+            {
+                await _gameLibrary.RemoveAsync(_appId);
+                RefreshService.RequestRefresh();
+            }
+            return;
+        }
+
+        var selectedItems = gamePick.Selected;
+        if (dlcRows.Count > 0)
+        {
+            var dlcPick = await ShowDepotRowsDialogAsync(
+                "Select DLC",
+                "Optional. Language-specific DLC packs are listed under each DLC name.",
+                dlcRows,
+                NextOrDownload(languageRows.Count > 0),
+                "Skip",
+                headerExtra: null,
+                typeHeader: "Name");
+            if (dlcPick.Result == ContentDialogResult.Primary)
+                selectedItems.AddRange(dlcPick.Selected);
+        }
+
+        if (languageRows.Count > 0)
+        {
+            var languagePick = await ShowDepotRowsDialogAsync(
+                "Select language",
+                "Optional. Leave none selected to skip extra languages.",
+                languageRows,
+                "Download Selected",
+                "Skip",
+                headerExtra: null);
+            if (languagePick.Result == ContentDialogResult.Primary)
+                selectedItems.AddRange(languagePick.Selected);
+        }
+
+        if (selectedItems.Count == 0)
+        {
+            if (removeFromLibraryOnCancel)
+            {
+                await _gameLibrary.RemoveAsync(_appId);
+                RefreshService.RequestRefresh();
+            }
+            return;
+        }
+
+        await StartDownloadProcessAsync(
+            selectedItems,
+            executePostDownload: executePostDownloadCheck.IsChecked == true);
+        RefreshService.RequestRefresh();
+    }
+
+    private static string NextOrDownload(bool hasMore) =>
+        hasMore ? "Next" : "Download Selected";
+
+    private async Task<(ContentDialogResult Result, List<DepotInfo> Selected)> ShowDepotRowsDialogAsync(
+        string title,
+        string hint,
+        IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display)> rows,
+        string primaryButton,
+        string closeButton,
+        FrameworkElement? headerExtra,
+        string typeHeader = "Type")
+    {
+        var root = new Grid
+        {
+            RowSpacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 80 });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2.4, GridUnitType.Star), MinWidth = 160 });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 80 });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var titleBlock = new TextBlock
+        {
+            Text = _currentGameName,
+            FontSize = 28,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        Grid.SetRow(titleBlock, 0);
+        root.Children.Add(titleBlock);
+
+        if (headerExtra is not null)
+        {
+            Grid.SetRow(headerExtra, 1);
+            root.Children.Add(headerExtra);
+        }
+
+        var hintBlock = new TextBlock
+        {
+            Text = hint,
+            FontSize = 12,
+            Opacity = 0.7,
+            TextWrapping = TextWrapping.WrapWholeWords
+        };
+        Grid.SetRow(hintBlock, 2);
+        root.Children.Add(hintBlock);
+
+        var header = CreateDepotTableHeader(typeHeader, out var checkBoxes);
+        var body = CreateDepotTableBody(rows, checkBoxes);
+        Grid.SetRow(header, 3);
+        root.Children.Add(header);
+
+        var scrollViewer = new ScrollViewer
+        {
+            Content = body,
+            MaxHeight = 420,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(0, 0, 8, 0),
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollMode = ScrollMode.Enabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalScrollMode = ScrollMode.Disabled
+        };
+        Grid.SetRow(scrollViewer, 4);
+        root.Children.Add(scrollViewer);
+
+        var dialog = new ContentDialog
+        {
+            Title = title,
+            PrimaryButtonText = primaryButton,
+            CloseButtonText = closeButton,
+            Content = root,
+            XamlRoot = ResolveDialogXamlRoot(),
+            RequestedTheme = ResolveDialogTheme()
+        };
+        dialog.Resources["ContentDialogMinWidth"] = 480.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 980.0;
+
+        var result = await dialog.ShowAsync();
+        var selected = checkBoxes
+            .Where(box => box.IsChecked == true)
+            .Select(box => (DepotInfo)box.Tag)
+            .ToList();
+        return (result, selected);
+    }
+
+    private static void AddDepotColumns(Grid grid)
+    {
+        grid.ColumnSpacing = 12;
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(88) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star), MinWidth = 152 });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.4, GridUnitType.Star), MinWidth = 100 });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
+    }
+
+    private static Grid CreateDepotTableHeader(string typeHeader, out List<CheckBox> checkBoxes)
+    {
+        var header = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 0, 24, 0)
+        };
+        AddDepotColumns(header);
+        header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         void AddHeaderCell(string text, int column)
         {
@@ -743,21 +962,21 @@ public sealed partial class DownloadsPage : Page
                 FontSize = 12,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 Opacity = 0.7,
-                TextAlignment = TextAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                TextAlignment = TextAlignment.Start,
+                HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetRow(block, 0);
             Grid.SetColumn(block, column);
-            table.Children.Add(block);
+            header.Children.Add(block);
         }
 
-        table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         AddHeaderCell("App ID", 1);
         AddHeaderCell("Manifest ID", 2);
-        AddHeaderCell("DL size", 3);
+        AddHeaderCell(typeHeader, 3);
+        AddHeaderCell("DL size", 4);
 
-        var checkBoxes = new List<CheckBox>();
+        checkBoxes = new List<CheckBox>();
         var uncheckAllButton = new Button
         {
             Content = new FontIcon
@@ -780,16 +999,16 @@ public sealed partial class DownloadsPage : Page
             VerticalContentAlignment = VerticalAlignment.Center
         };
         ToolTipService.SetToolTip(uncheckAllButton, "Uncheck all");
+        var boxes = checkBoxes;
         uncheckAllButton.Click += (_, _) =>
         {
-            foreach (CheckBox box in checkBoxes)
+            foreach (CheckBox box in boxes)
             {
                 if (box.IsEnabled)
                     box.IsChecked = false;
             }
         };
 
-        // Match CheckBox layout: 32×32 hit area, glyph left-aligned inside it.
         var uncheckHost = new Grid
         {
             Width = 32,
@@ -800,17 +1019,32 @@ public sealed partial class DownloadsPage : Page
         uncheckHost.Children.Add(uncheckAllButton);
         Grid.SetRow(uncheckHost, 0);
         Grid.SetColumn(uncheckHost, 0);
-        table.Children.Add(uncheckHost);
-        for (int i = 0; i < displayRows.Count; i++)
+        header.Children.Add(uncheckHost);
+        return header;
+    }
+
+    private static Grid CreateDepotTableBody(
+        IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display)> rows,
+        List<CheckBox> checkBoxes)
+    {
+        var table = new Grid
         {
-            int rowIndex = i + 1;
+            RowSpacing = 4,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 0, 16, 0)
+        };
+        AddDepotColumns(table);
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            int rowIndex = i;
             table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var row = displayRows[i];
+            var row = rows[i];
 
             var checkBox = new CheckBox
             {
                 Tag = row.Depot,
-                IsChecked = row.Display.HasLocalManifest,
+                IsChecked = row.Display.AutoSelected,
                 IsEnabled = row.Display.HasLocalManifest,
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -822,14 +1056,13 @@ public sealed partial class DownloadsPage : Page
             };
             checkBoxes.Add(checkBox);
 
-            // Full-row hit target added first so checkbox/text sit above it.
             var hitTarget = new Border
             {
                 Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent)
             };
             Grid.SetRow(hitTarget, rowIndex);
             Grid.SetColumn(hitTarget, 0);
-            Grid.SetColumnSpan(hitTarget, 4);
+            Grid.SetColumnSpan(hitTarget, 5);
             hitTarget.PointerPressed += (_, args) =>
             {
                 if (!checkBox.IsEnabled)
@@ -847,8 +1080,8 @@ public sealed partial class DownloadsPage : Page
             {
                 Text = row.Display.DepotId,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                TextAlignment = TextAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                TextAlignment = TextAlignment.Start,
+                HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Center,
                 IsHitTestVisible = false
             };
@@ -859,91 +1092,51 @@ public sealed partial class DownloadsPage : Page
             var manifestText = new TextBlock
             {
                 Text = row.Display.ManifestId,
-                TextAlignment = TextAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                TextAlignment = TextAlignment.Start,
+                HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
                 IsHitTestVisible = false
             };
             Grid.SetRow(manifestText, rowIndex);
             Grid.SetColumn(manifestText, 2);
             table.Children.Add(manifestText);
 
+            var typeText = new TextBlock
+            {
+                Text = row.Display.TypeLabel,
+                TextAlignment = TextAlignment.Start,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.NoWrap,
+                IsHitTestVisible = false
+            };
+            if (!string.IsNullOrWhiteSpace(row.Display.DepotName))
+                ToolTipService.SetToolTip(typeText, row.Display.DepotName);
+            Grid.SetRow(typeText, rowIndex);
+            Grid.SetColumn(typeText, 3);
+            table.Children.Add(typeText);
+
             var sizeText = new TextBlock
             {
                 Text = row.Display.DownloadText,
-                TextAlignment = TextAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                TextAlignment = TextAlignment.Start,
+                HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Center,
                 IsHitTestVisible = false
             };
             Grid.SetRow(sizeText, rowIndex);
-            Grid.SetColumn(sizeText, 3);
+            Grid.SetColumn(sizeText, 4);
             table.Children.Add(sizeText);
         }
 
-        var scrollViewer = new ScrollViewer
-        {
-            Content = table,
-            MaxHeight = 360,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(0, 0, 8, 0),
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollMode = ScrollMode.Enabled,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            HorizontalScrollMode = ScrollMode.Disabled
-        };
-        Grid.SetRow(scrollViewer, 2);
-        root.Children.Add(scrollViewer);
-
-        var dialog = new ContentDialog
-        {
-            Title = "Select depots",
-            PrimaryButtonText = "Download Selected",
-            CloseButtonText = "Cancel",
-            Content = root,
-            XamlRoot = XamlRoot,
-            RequestedTheme = ActualTheme
-        };
-        // Width follows the title; table stretches to that full width.
-        dialog.Resources["ContentDialogMinWidth"] = 320.0;
-        dialog.Resources["ContentDialogMaxWidth"] = 900.0;
-
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.Primary)
-        {
-            var selectedItems = checkBoxes
-                .Where(cb => cb.IsChecked == true)
-                .Select(cb => (DepotInfo)cb.Tag)
-                .ToList();
-
-            if (selectedItems.Count == 0)
-            {
-                if (removeFromLibraryOnCancel)
-                {
-                    await _gameLibrary.RemoveAsync(_appId);
-                    RefreshService.RequestRefresh();
-                }
-                return;
-            }
-
-            await StartDownloadProcessAsync(
-                selectedItems,
-                executePostDownload: executePostDownloadCheck.IsChecked == true);
-            RefreshService.RequestRefresh();
-        }
-        else if (removeFromLibraryOnCancel)
-        {
-            await _gameLibrary.RemoveAsync(_appId);
-            RefreshService.RequestRefresh();
-        }
+        return table;
     }
 
     private List<(DepotInfo Depot, DepotDisplayInfo Display)> BuildDepotDisplayRows(
         IReadOnlyList<DepotInfo> depots,
         IReadOnlyDictionary<string, DepotMetadata> metadata)
     {
-        var rows = new List<(DepotInfo Depot, DepotDisplayInfo Display)>();
+        var staged = new List<(DepotInfo Depot, DepotDisplayInfo Display, DepotMetadata? Meta)>();
         foreach (var depot in depots)
         {
             metadata.TryGetValue(depot.DepotId, out var meta);
@@ -962,18 +1155,211 @@ public sealed partial class DownloadsPage : Page
             // Prefer download size; fall back to full size when Steam only exposes one value.
             download ??= size;
 
-            rows.Add((depot, new DepotDisplayInfo
+            string languageCode = meta?.Language ?? InferLanguageCodeFromName(meta?.Name) ?? string.Empty;
+            staged.Add((depot, new DepotDisplayInfo
             {
                 DepotId = depot.DepotId,
                 ManifestId = depot.ManifestId,
                 Configuration = meta?.Configuration ?? string.Empty,
+                TypeLabel = FormatDepotTypeLabel(meta, depot.DepotId, _currentGameName),
+                DepotName = meta?.Name ?? string.Empty,
                 SizeBytes = size,
                 DownloadBytes = download,
-                HasLocalManifest = hasManifest
-            }));
+                HasLocalManifest = hasManifest,
+                IsDlc = meta?.IsDlc == true,
+                IsLanguage = !string.IsNullOrWhiteSpace(languageCode),
+                LanguageCode = languageCode
+            }, meta));
         }
 
-        return rows;
+        staged = staged
+            .Where(row => !SteamDepotPlatformFilter.IsMacOsOrLinuxOnly(row.Meta, row.Display))
+            .ToList();
+
+        var windowsIds = SteamDepotPlatformFilter.SelectWindowsDepotIds(staged);
+        AppLog.Write(
+            $"[Downloads] Windows auto-select {windowsIds.Count}/{staged.Count} depot(s): " +
+            string.Join(", ", windowsIds));
+        foreach (var row in staged)
+        {
+            AppLog.Write(
+                $"[Downloads] depot {row.Depot.DepotId} os={row.Meta?.OsList ?? "(none)"} " +
+                $"type={row.Display.TypeLabel} selected={windowsIds.Contains(row.Depot.DepotId)}");
+        }
+
+        return staged
+            .OrderBy(row => SteamDepotPlatformFilter.ListRank(row.Meta, row.Display))
+            .ThenBy(row => string.IsNullOrWhiteSpace(row.Meta?.Language) ? 0 : 1)
+            .ThenBy(row => row.Meta?.IsDlc == true ? 1 : 0)
+            .ThenBy(row => row.Depot.DepotId, StringComparer.Ordinal)
+            .Select(row =>
+            {
+                bool isEnglish = IsEnglishLanguage(row.Display.LanguageCode);
+                var display = new DepotDisplayInfo
+                {
+                    DepotId = row.Display.DepotId,
+                    ManifestId = row.Display.ManifestId,
+                    Configuration = row.Display.Configuration,
+                    TypeLabel = row.Display.TypeLabel,
+                    DepotName = row.Display.DepotName,
+                    SizeBytes = row.Display.SizeBytes,
+                    DownloadBytes = row.Display.DownloadBytes,
+                    HasLocalManifest = row.Display.HasLocalManifest,
+                    IsDlc = row.Display.IsDlc,
+                    IsLanguage = row.Display.IsLanguage,
+                    LanguageCode = row.Display.LanguageCode,
+                    AutoSelected = row.Display.HasLocalManifest && (
+                        row.Display.IsDlc
+                        || (row.Display.IsLanguage && isEnglish)
+                        || (!row.Display.IsLanguage && windowsIds.Contains(row.Depot.DepotId)))
+                };
+                return (row.Depot, display);
+            })
+            .ToList();
+    }
+
+    private static string FormatDepotTypeLabel(DepotMetadata? meta, string depotId, string gameName)
+    {
+        string? language = FormatSteamLanguage(meta?.Language ?? InferLanguageCodeFromName(meta?.Name));
+
+        if (meta?.IsDlc == true)
+        {
+            string dlcName = FormatDlcName(meta, depotId, gameName);
+            return string.IsNullOrWhiteSpace(language) ? dlcName : $"{dlcName} — {language}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(language))
+            return $"Language: {language}";
+
+        return meta?.TypeLabel ?? "Game";
+    }
+
+    private static readonly Regex LocaleSuffixRegex = new(
+        @"\s+-\s+(?:Content|[a-z]{2}(?:_[A-Za-z]{2})?)\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static string FormatDlcName(DepotMetadata meta, string depotId, string gameName)
+    {
+        string name = meta.Name?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            int paren = name.IndexOf(" (", StringComparison.Ordinal);
+            if (paren >= 0)
+                name = name[..paren];
+
+            name = LocaleSuffixRegex.Replace(name, string.Empty).Trim();
+            foreach (string suffix in new[] { " Depot", " depot", " デポ" })
+            {
+                if (name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    name = name[..^suffix.Length].Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(gameName)
+                && name.StartsWith(gameName, StringComparison.OrdinalIgnoreCase))
+            {
+                name = name[gameName.Length..].TrimStart(' ', '-', ':');
+            }
+            else
+            {
+                int dash = name.IndexOf(" - ", StringComparison.Ordinal);
+                if (dash >= 0)
+                    name = name[(dash + 3)..].Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(name))
+                return name;
+        }
+
+        return string.IsNullOrWhiteSpace(meta.DlcAppId)
+            ? $"DLC {depotId}"
+            : $"DLC {meta.DlcAppId}";
+    }
+
+    private static string? InferLanguageCodeFromName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        Match match = Regex.Match(name, @"-\s*([a-z]{2})(?:_([A-Za-z]{2}))?\s*$", RegexOptions.IgnoreCase);
+        if (!match.Success)
+            return null;
+
+        string language = match.Groups[1].Value.ToLowerInvariant();
+        string region = match.Groups[2].Value.ToLowerInvariant();
+        return (language, region) switch
+        {
+            ("pt", "br") => "brazilian",
+            ("es", "mx") or ("es", "419") => "latam",
+            ("zh", "cn") or ("zh", "hans") => "schinese",
+            ("zh", "tw") or ("zh", "hk") or ("zh", "hant") => "tchinese",
+            ("ko", _) => "koreana",
+            ("en", _) => "english",
+            _ => language
+        };
+    }
+
+    private static bool IsEnglishLanguage(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            return false;
+
+        string normalized = code.Trim().ToLowerInvariant().Replace('-', '_');
+        return normalized is "english" or "en" or "en_us" or "en_gb";
+    }
+
+    private static string DlcGroupName(DepotDisplayInfo display)
+    {
+        string label = display.TypeLabel;
+        int separator = label.LastIndexOf(" — ", StringComparison.Ordinal);
+        return separator >= 0 ? label[..separator] : label;
+    }
+
+    private static int DlcLanguageRank(DepotDisplayInfo display)
+    {
+        if (!display.IsLanguage)
+            return 0;
+        return IsEnglishLanguage(display.LanguageCode) ? 1 : 2;
+    }
+
+    private static string? FormatSteamLanguage(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            return null;
+
+        return code.Trim().ToLowerInvariant() switch
+        {
+            "arabic" => "Arabic",
+            "brazilian" => "Portuguese - Brazil",
+            "bulgarian" => "Bulgarian",
+            "czech" => "Czech",
+            "danish" => "Danish",
+            "dutch" => "Dutch",
+            "english" => "English",
+            "finnish" => "Finnish",
+            "french" => "French",
+            "german" => "German",
+            "greek" => "Greek",
+            "hungarian" => "Hungarian",
+            "indonesian" => "Indonesian",
+            "italian" => "Italian",
+            "japanese" => "Japanese",
+            "koreana" => "Korean",
+            "latam" => "Spanish - Latin America",
+            "norwegian" => "Norwegian",
+            "polish" => "Polish",
+            "portuguese" => "Portuguese - Portugal",
+            "romanian" => "Romanian",
+            "russian" => "Russian",
+            "schinese" => "Simplified Chinese",
+            "spanish" => "Spanish - Spain",
+            "swedish" => "Swedish",
+            "tchinese" => "Traditional Chinese",
+            "thai" => "Thai",
+            "turkish" => "Turkish",
+            "ukrainian" => "Ukrainian",
+            "vietnamese" => "Vietnamese",
+            _ => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(code.Replace('_', ' '))
+        };
     }
 
     private string? ResolveManifestPath(DepotInfo depot)

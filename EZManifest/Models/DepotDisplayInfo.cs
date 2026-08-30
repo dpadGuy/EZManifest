@@ -6,9 +6,15 @@ public sealed class DepotDisplayInfo
     public string ManifestId { get; init; } = string.Empty;
     public string Configuration { get; init; } = string.Empty;
     public string OsLabel { get; init; } = string.Empty;
+    public string TypeLabel { get; init; } = "Game";
+    public string DepotName { get; init; } = string.Empty;
     public long? SizeBytes { get; init; }
     public long? DownloadBytes { get; init; }
     public bool HasLocalManifest { get; init; }
+    public bool AutoSelected { get; init; }
+    public bool IsDlc { get; init; }
+    public bool IsLanguage { get; init; }
+    public string LanguageCode { get; init; } = string.Empty;
 
     public string SizeText => FormatBytes(SizeBytes);
     public string DownloadText => FormatBytes(DownloadBytes);

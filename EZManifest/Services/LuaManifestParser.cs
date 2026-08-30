@@ -9,6 +9,10 @@ public sealed class LuaManifestParser
         @"addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*""([a-fA-F0-9]+)""\s*\)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex RelatedAppIdRegex = new(
+        @"addappid\s*\(\s*(\d+)\s*\)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex ManifestFileNameRegex = new(
         @"^(?<depot>\d+)_(?<manifest>\d+)$",
         RegexOptions.Compiled);
@@ -56,6 +60,21 @@ public sealed class LuaManifestParser
         return depots
             .OrderBy(depot => depot.DepotId, StringComparer.Ordinal)
             .ThenBy(depot => depot.ManifestId, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// DLC/music apps listed as addappid(id) with no key — used to fetch Steam appinfo, not comments.
+    /// </summary>
+    public IReadOnlyList<string> ParseRelatedAppIds(string luaFilePath)
+    {
+        if (!File.Exists(luaFilePath))
+            return Array.Empty<string>();
+
+        string text = File.ReadAllText(luaFilePath);
+        return RelatedAppIdRegex.Matches(text)
+            .Select(match => match.Groups[1].Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 }
