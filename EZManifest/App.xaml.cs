@@ -15,6 +15,7 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+        _ = AppPaths.DataDirectory;
         _services = ConfigureServices();
     }
 
@@ -26,6 +27,7 @@ public partial class App : Application
     {
         // Ensure the log buffer is subscribed before any page work.
         _ = _services.GetRequiredService<DebugLogService>();
+        _services.GetRequiredService<WindowsToastService>().Initialize();
         _window = _services.GetRequiredService<MainWindow>();
 
         try
@@ -63,6 +65,7 @@ public partial class App : Application
         services.AddSingleton<WindowProvider>();
         services.AddSingleton<AppNavigationService>();
         services.AddSingleton<AppNotificationService>();
+        services.AddSingleton<WindowsToastService>();
         services.AddSingleton<AppMessageBoxService>();
         services.AddSingleton<AppSettingsService>();
         services.AddSingleton<DebugLogService>();
@@ -73,6 +76,7 @@ public partial class App : Application
         services.AddSingleton<SteamMetadataService>();
         services.AddSingleton<SteamDepotMetadataService>();
         services.AddSingleton<GameInstallPathService>();
+        services.AddSingleton<GameInstallSizeService>();
         services.AddSingleton<GameUninstallService>();
         services.AddSingleton<ShortcutService>();
         services.AddSingleton<CoverArtCache>();

@@ -8,29 +8,35 @@ namespace EZManifest.Services;
 /// </summary>
 internal static class SteamDepotPlatformFilter
 {
-    private const string DefaultLanguage = "english";
-
     public static HashSet<string> SelectWindowsDepotIds(
         IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display, DepotMetadata? Meta)> rows)
     {
         var selected = new HashSet<string>(StringComparer.Ordinal);
 
-        var windows = rows
+        var candidates = rows
             .Where(row =>
                 row.Display.HasLocalManifest
-                && !IsMacOsOrLinuxOnly(row.Meta, row.Display)
-                && MatchesWindows(row.Meta, row.Display)
-                && MatchesHostArch(row.Meta)
+                && !row.Display.IsLanguage
+                && !row.Display.IsDlc
+                && !row.Display.IsShared
                 && !IsOptional(row.Meta)
-                && row.Meta?.IsShared != true)
+                && !IsMacOsOrLinuxOnly(row.Meta, row.Display)
+                && MatchesWindows(row.Meta, row.Display))
             .ToList();
 
-        var languageMatched = windows
-            .Where(row => MatchesDefaultLanguage(row.Meta))
-            .ToList();
+        candidates = PreferHostArch(candidates, row => row.Display.OsArch ?? row.Meta?.OsArch);
 
-        var auto = languageMatched.Count > 0 ? languageMatched : windows;
-        foreach (var row in auto)
+        bool hasSteamMetadata = rows.Any(row => row.Meta is not null);
+
+        if (candidates.Count == 0)
+            return selected;
+
+        // Empty oslist is Steam's default Windows depot. Only refuse a mass-check
+        // when we have no metadata at all and more than one leftover row.
+        if (!hasSteamMetadata && candidates.Count != 1)
+            return selected;
+
+        foreach (var row in candidates)
             selected.Add(row.Depot.DepotId);
 
         return selected;
@@ -107,23 +113,28 @@ internal static class SteamDepotPlatformFilter
     private static IEnumerable<string> SplitOs(string os) =>
         os.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private static bool MatchesHostArch(DepotMetadata? meta)
-    {
-        if (string.IsNullOrWhiteSpace(meta?.OsArch))
-            return true;
+    public static List<(DepotInfo Depot, DepotDisplayInfo Display)> PreferHostArch(
+        IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display)> rows) =>
+        PreferHostArch(rows, row => row.Display.OsArch);
 
-        string host = Environment.Is64BitOperatingSystem ? "64" : "32";
-        return meta.OsArch.Equals(host, StringComparison.OrdinalIgnoreCase);
+    public static List<T> PreferHostArch<T>(IReadOnlyList<T> rows, Func<T, string?> osArch)
+    {
+        string preferred = Environment.Is64BitOperatingSystem ? "64" : "32";
+        if (!rows.Any(row => osArch(row).EqualsArch(preferred)))
+            return rows.ToList();
+
+        return rows
+            .Where(row =>
+            {
+                string? arch = osArch(row);
+                return string.IsNullOrWhiteSpace(arch) || arch.EqualsArch(preferred);
+            })
+            .ToList();
     }
 
-    private static bool MatchesDefaultLanguage(DepotMetadata? meta)
-    {
-        if (string.IsNullOrWhiteSpace(meta?.Language))
-            return true;
-
-        string language = meta.Language.Trim().ToLowerInvariant().Replace('-', '_');
-        return language is DefaultLanguage or "en" or "en_us" or "en_gb";
-    }
+    private static bool EqualsArch(this string? value, string arch) =>
+        !string.IsNullOrWhiteSpace(value)
+        && value.Equals(arch, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsOptional(DepotMetadata? meta) => meta?.IsOptional == true;
 }

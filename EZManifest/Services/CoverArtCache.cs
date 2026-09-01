@@ -17,20 +17,24 @@ public sealed class CoverArtCache
 
     private readonly LinkedList<CacheEntry> _lru = new();
 
-    public ImageSource? GetOrCreate(string? imagePath)
+    public ImageSource? GetOrCreate(string? imagePath, int decodePixelWidth = DecodePixelWidth)
     {
         if (string.IsNullOrWhiteSpace(imagePath))
             return null;
 
-        string key;
+        string path;
         try
         {
-            key = Path.GetFullPath(imagePath);
+            path = Path.GetFullPath(imagePath);
         }
         catch
         {
             return null;
         }
+
+        string key = decodePixelWidth == DecodePixelWidth
+            ? path
+            : $"{path}|{decodePixelWidth}";
 
         if (_map.TryGetValue(key, out var existing))
         {
@@ -39,14 +43,14 @@ public sealed class CoverArtCache
             return existing.Value.Source;
         }
 
-        if (!File.Exists(key))
+        if (!File.Exists(path))
             return null;
 
         var bitmap = new BitmapImage
         {
             DecodePixelType = DecodePixelType.Logical,
-            DecodePixelWidth = DecodePixelWidth,
-            UriSource = new Uri(key, UriKind.Absolute)
+            DecodePixelWidth = decodePixelWidth,
+            UriSource = new Uri(path, UriKind.Absolute)
         };
 
         var entry = new CacheEntry(key, bitmap);

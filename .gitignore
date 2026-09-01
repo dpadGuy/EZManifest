@@ -7,10 +7,10 @@
 
 ## Publish / runtime (local)
 /publish/
+/installer/*.exe
 settings.json
 items.json
 Manifests/
-Goldberg/
 
 ## Misc
 *.log

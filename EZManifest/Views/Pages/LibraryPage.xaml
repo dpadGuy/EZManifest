@@ -10,132 +10,717 @@
     mc:Ignorable="d"
     Unloaded="Page_Unloaded">
 
+    <Grid>
     <Grid Padding="16,12,8,16">
-        <ItemsRepeaterScrollHost>
-            <ScrollViewer
-                x:Name="LibraryScroll"
-                HorizontalScrollMode="Disabled"
-                HorizontalScrollBarVisibility="Disabled"
-                VerticalScrollBarVisibility="Auto"
-                VerticalScrollMode="Enabled"
-                ZoomMode="Disabled"
-                SizeChanged="LibraryScroll_SizeChanged">
-                <ItemsRepeater
-                    x:Name="GamesGrid"
-                    Margin="0,0,16,16"
-                    HorizontalAlignment="Stretch"
-                    VerticalCacheLength="4"
-                    HorizontalCacheLength="0"
-                    ElementPrepared="GamesGrid_ElementPrepared"
-                    ElementClearing="GamesGrid_ElementClearing"
-                    ItemsSource="{x:Bind FilteredApps, Mode=OneWay}">
-                    <ItemsRepeater.Layout>
-                        <!-- Fill stretches cards across the full row so leftover right gutter disappears. -->
-                        <UniformGridLayout
-                            Orientation="Horizontal"
-                            MinItemWidth="180"
-                            MinRowSpacing="10"
-                            MinColumnSpacing="10"
-                            ItemsStretch="Fill"
-                            ItemsJustification="Start" />
-                    </ItemsRepeater.Layout>
-                    <ItemsRepeater.ItemTemplate>
-                        <DataTemplate x:DataType="models:GameEntry">
-                            <Border
-                                Tag="{x:Bind}"
-                                HorizontalAlignment="Stretch"
-                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8"
-                                PointerPressed="Card_PointerPressed"
-                                DoubleTapped="Card_DoubleTapped"
-                                RightTapped="Card_RightTapped">
-                                <Grid VerticalAlignment="Top">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Border
-                                        Grid.Row="0"
-                                        Height="{Binding CoverArtHeight, ElementName=LibraryRoot}"
-                                        HorizontalAlignment="Stretch"
-                                        VerticalAlignment="Top"
-                                        Background="{ThemeResource ControlFillColorDefaultBrush}"
-                                        CornerRadius="8,8,0,0">
-                                        <Grid>
+        <Grid x:Name="GridViewHost" Visibility="Collapsed">
+            <ItemsRepeaterScrollHost>
+                <ScrollViewer
+                    x:Name="LibraryScroll"
+                    HorizontalScrollMode="Disabled"
+                    HorizontalScrollBarVisibility="Disabled"
+                    VerticalScrollBarVisibility="Auto"
+                    VerticalScrollMode="Enabled"
+                    ZoomMode="Disabled"
+                    SizeChanged="LibraryScroll_SizeChanged">
+                    <ItemsRepeater
+                        x:Name="GamesGrid"
+                        Margin="0,0,16,16"
+                        HorizontalAlignment="Stretch"
+                        VerticalCacheLength="4"
+                        HorizontalCacheLength="0"
+                        ElementPrepared="GamesGrid_ElementPrepared"
+                        ElementClearing="GamesGrid_ElementClearing"
+                        ItemsSource="{x:Bind FilteredApps, Mode=OneWay}">
+                        <ItemsRepeater.Layout>
+                            <UniformGridLayout
+                                Orientation="Horizontal"
+                                MinItemWidth="180"
+                                MinRowSpacing="10"
+                                MinColumnSpacing="10"
+                                ItemsStretch="Fill"
+                                ItemsJustification="Start" />
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="models:GameEntry">
+                                <Border
+                                    Tag="{x:Bind}"
+                                    HorizontalAlignment="Stretch"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    PointerPressed="Card_PointerPressed"
+                                    DoubleTapped="Card_DoubleTapped"
+                                    RightTapped="Card_RightTapped">
+                                    <Grid VerticalAlignment="Top">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Border
+                                            Grid.Row="0"
+                                            Height="{Binding CoverArtHeight, ElementName=LibraryRoot}"
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Top"
+                                            Background="{ThemeResource ControlFillColorDefaultBrush}"
+                                            CornerRadius="8,8,0,0">
+                                            <Grid>
+                                                <TextBlock
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center"
+                                                    FontSize="14"
+                                                    Opacity="0.55"
+                                                    Text="No art"
+                                                    Visibility="{x:Bind NoArtVisibility}" />
+                                                <Image
+                                                    x:Name="CoverImage"
+                                                    Stretch="UniformToFill"
+                                                    Visibility="{x:Bind CoverArtVisibility}" />
+                                            </Grid>
+                                        </Border>
+                                        <StackPanel
+                                            Grid.Row="1"
+                                            Padding="10,8,10,10"
+                                            Spacing="6">
                                             <TextBlock
                                                 HorizontalAlignment="Center"
-                                                VerticalAlignment="Center"
-                                                FontSize="14"
-                                                Opacity="0.55"
-                                                Text="No art"
-                                                Visibility="{x:Bind NoArtVisibility}" />
+                                                FontSize="12"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="{x:Bind InstallSizeText, Mode=OneWay}"
+                                                Visibility="{x:Bind InstallSizeVisibility, Mode=OneWay}" />
+                                            <Grid Height="44" HorizontalAlignment="Stretch">
+                                                <TextBlock
+                                                    HorizontalAlignment="Stretch"
+                                                    VerticalAlignment="Center"
+                                                    FontSize="{x:Bind TitleFontSize}"
+                                                    FontWeight="SemiBold"
+                                                    Text="{x:Bind Name}"
+                                                    TextWrapping="Wrap"
+                                                    TextTrimming="CharacterEllipsis"
+                                                    MaxLines="2"
+                                                    TextAlignment="Center" />
+                                            </Grid>
+                                            <Grid>
+                                                <Button
+                                                    Tag="{x:Bind}"
+                                                    HorizontalAlignment="Stretch"
+                                                    Visibility="{x:Bind PlayButtonVisibility, Mode=OneWay}"
+                                                    Click="PrimaryActionButton_Click">
+                                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xF5B0;" FontSize="13" />
+                                                        <TextBlock Text="Play" />
+                                                    </StackPanel>
+                                                    <Button.Resources>
+                                                        <SolidColorBrush x:Key="ButtonBackground" Color="#0F9D58" />
+                                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#18C46A" />
+                                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#0C7A45" />
+                                                        <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#0F9D58" Opacity="0.5" />
+                                                        <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                                        <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                                        <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                                        <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" Opacity="0.7" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrush" Color="#0F9D58" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#18C46A" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#0C7A45" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#0F9D58" Opacity="0.5" />
+                                                    </Button.Resources>
+                                                </Button>
+                                                <Button
+                                                    Tag="{x:Bind}"
+                                                    HorizontalAlignment="Stretch"
+                                                    Content="Stop"
+                                                    Visibility="{x:Bind StopButtonVisibility, Mode=OneWay}"
+                                                    Click="StopGameButton_Click">
+                                                    <Button.Resources>
+                                                        <SolidColorBrush x:Key="ButtonBackground" Color="#0078D4" />
+                                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#1A86D9" />
+                                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                                                        <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#0078D4" Opacity="0.5" />
+                                                        <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                                        <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                                        <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                                        <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" Opacity="0.7" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrush" Color="#0078D4" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#1A86D9" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#005A9E" />
+                                                        <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#0078D4" Opacity="0.5" />
+                                                    </Button.Resources>
+                                                </Button>
+                                                <Button
+                                                    Tag="{x:Bind}"
+                                                    HorizontalAlignment="Stretch"
+                                                    Visibility="{x:Bind InstallButtonVisibility, Mode=OneWay}"
+                                                    Click="PrimaryActionButton_Click">
+                                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE896;" FontSize="13" />
+                                                        <TextBlock Text="Install" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </Grid>
+                                        </StackPanel>
+                                        <Border
+                                            Grid.RowSpan="2"
+                                            IsHitTestVisible="False"
+                                            BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="8"
+                                            Visibility="{x:Bind SelectionVisibility, Mode=OneWay}" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </ScrollViewer>
+            </ItemsRepeaterScrollHost>
+        </Grid>
+
+        <Grid x:Name="ListViewHost">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300" MinWidth="220" MaxWidth="380" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Margin="0,0,12,0">
+                <ListView
+                    x:Name="GamesList"
+                    Padding="0"
+                    HorizontalContentAlignment="Stretch"
+                    HorizontalAlignment="Stretch"
+                    ItemsSource="{x:Bind FilteredApps, Mode=OneWay}"
+                    SelectionMode="Single"
+                    IsItemClickEnabled="True"
+                    ContainerContentChanging="GamesList_ContainerContentChanging"
+                    SelectionChanged="GamesList_SelectionChanged"
+                    DoubleTapped="GamesList_DoubleTapped"
+                    RightTapped="GamesList_RightTapped">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalAlignment" Value="Stretch" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="MinHeight" Value="44" />
+                            <Setter Property="MinWidth" Value="0" />
+                            <Setter Property="Margin" Value="4,0,10,0" />
+                            <Setter Property="Padding" Value="12,6" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="models:GameEntry">
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="32" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border
+                                    Width="32"
+                                    Height="32"
+                                    CornerRadius="3"
+                                    Background="{ThemeResource ControlFillColorDefaultBrush}">
+                                    <Grid>
+                                        <TextBlock
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            FontSize="9"
+                                            Opacity="0.45"
+                                            Text="—"
+                                            Visibility="{x:Bind NoListArtVisibility, Mode=OneWay}" />
+                                        <Image
+                                            x:Name="ListCoverImage"
+                                            Stretch="Uniform"
+                                            Visibility="{x:Bind ListArtVisibility, Mode=OneWay}" />
+                                    </Grid>
+                                </Border>
+                                <TextBlock
+                                    Grid.Column="1"
+                                    VerticalAlignment="Center"
+                                    Text="{x:Bind Name}"
+                                    TextTrimming="CharacterEllipsis"
+                                    TextWrapping="NoWrap" />
+                                <FontIcon
+                                    Grid.Column="2"
+                                    VerticalAlignment="Center"
+                                    FontFamily="Segoe Fluent Icons"
+                                    Glyph="&#xF5B0;"
+                                    FontSize="12"
+                                    Foreground="#0F9D58"
+                                    Visibility="{x:Bind InstalledPlayIconVisibility}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Border>
+
+            <Grid Grid.Column="1">
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Opacity="0.55"
+                    FontSize="16"
+                    Text="Select a game"
+                    Visibility="{x:Bind NoSelectedGameVisibility, Mode=OneWay}" />
+                <Border
+                    Visibility="{x:Bind HasSelectedGameVisibility, Mode=OneWay}"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <Grid
+                        x:Name="ListDetailPane"
+                        SizeChanged="ListDetailPane_SizeChanged">
+                    <Border
+                        x:Name="ListDetailHeroHost"
+                        Height="320"
+                        VerticalAlignment="Top"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        SizeChanged="ListDetailHeroHost_SizeChanged">
+                        <Grid>
+                            <TextBlock
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Opacity="0.45"
+                                FontSize="16"
+                                Text="No art" />
+                            <Image
+                                x:Name="ListDetailCover"
+                                Stretch="UniformToFill"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center" />
+                            <Rectangle VerticalAlignment="Bottom" Height="80">
+                                <Rectangle.Fill>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                        <GradientStop Color="Transparent" Offset="0" />
+                                        <GradientStop Color="{ThemeResource CardBackgroundFillColorDefault}" Offset="1" />
+                                    </LinearGradientBrush>
+                                </Rectangle.Fill>
+                            </Rectangle>
+                            <StackPanel
+                                Margin="28,0,28,88"
+                                VerticalAlignment="Bottom"
+                                Spacing="8">
+                                <Image
+                                    x:Name="ListDetailLogo"
+                                    MaxWidth="320"
+                                    MaxHeight="88"
+                                    HorizontalAlignment="Left"
+                                    Stretch="Uniform"
+                                    Visibility="Collapsed" />
+                                <TextBlock
+                                    x:Name="ListDetailTitle"
+                                    FontSize="28"
+                                    FontWeight="Bold"
+                                    Text="{x:Bind SelectedGame.Name, Mode=OneWay}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <Grid x:Name="ListDetailBody" Margin="0,120,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Border
+                        Height="64"
+                        Padding="20,0"
+                        Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid MinWidth="148" Height="44" VerticalAlignment="Center">
+                                <Button
+                                    MinWidth="148"
+                                    Height="44"
+                                    Padding="20,0"
+                                    HorizontalAlignment="Stretch"
+                                    Visibility="{x:Bind SelectedGame.PlayButtonVisibility, Mode=OneWay}"
+                                    Click="ListDetailPrimary_Click">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xF5B0;" FontSize="14" />
+                                        <TextBlock Text="Play" />
+                                    </StackPanel>
+                                    <Button.Resources>
+                                        <SolidColorBrush x:Key="ButtonBackground" Color="#0F9D58" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#18C46A" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#0C7A45" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#0F9D58" Opacity="0.5" />
+                                        <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" Opacity="0.7" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrush" Color="#0F9D58" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#18C46A" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#0C7A45" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#0F9D58" Opacity="0.5" />
+                                    </Button.Resources>
+                                </Button>
+                                <Button
+                                    MinWidth="148"
+                                    Height="44"
+                                    Padding="20,0"
+                                    HorizontalAlignment="Stretch"
+                                    Content="Stop"
+                                    Visibility="{x:Bind SelectedGame.StopButtonVisibility, Mode=OneWay}"
+                                    Click="ListDetailStop_Click">
+                                    <Button.Resources>
+                                        <SolidColorBrush x:Key="ButtonBackground" Color="#0078D4" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#1A86D9" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#0078D4" Opacity="0.5" />
+                                        <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" Opacity="0.7" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrush" Color="#0078D4" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#1A86D9" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#005A9E" />
+                                        <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#0078D4" Opacity="0.5" />
+                                    </Button.Resources>
+                                </Button>
+                                <Button
+                                    MinWidth="148"
+                                    Height="44"
+                                    Padding="20,0"
+                                    HorizontalAlignment="Stretch"
+                                    Visibility="{x:Bind SelectedGame.InstallButtonVisibility, Mode=OneWay}"
+                                    Click="ListDetailPrimary_Click">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE896;" FontSize="14" />
+                                        <TextBlock Text="Install" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                            <StackPanel
+                                Grid.Column="1"
+                                Margin="28,0,0,0"
+                                Orientation="Horizontal"
+                                Spacing="36"
+                                VerticalAlignment="Center">
+                                <StackPanel Spacing="2">
+                                    <TextBlock
+                                        FontSize="11"
+                                        CharacterSpacing="40"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="INSTALL SIZE" />
+                                    <TextBlock
+                                        FontSize="16"
+                                        Text="{x:Bind SelectedGame.InstallSizeText, Mode=OneWay}" />
+                                </StackPanel>
+                                <StackPanel Spacing="2">
+                                    <TextBlock
+                                        FontSize="11"
+                                        CharacterSpacing="40"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="STATUS" />
+                                    <TextBlock
+                                        FontSize="16"
+                                        Text="{x:Bind SelectedGameStatus, Mode=OneWay}" />
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="2"
+                                Orientation="Horizontal"
+                                Spacing="8"
+                                VerticalAlignment="Center">
+                                <Button
+                                    x:Name="ListDetailManageButton"
+                                    Width="40"
+                                    Height="40"
+                                    Padding="0"
+                                    ToolTipService.ToolTip="Manage"
+                                    Click="ListDetailManage_Click">
+                                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE713;" FontSize="14" />
+                                </Button>
+                                <Button
+                                    Width="40"
+                                    Height="40"
+                                    Padding="0"
+                                    ToolTipService.ToolTip="Store page"
+                                    Click="ListDetailStore_Click">
+                                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE946;" FontSize="14" />
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <ScrollViewer
+                        Grid.Row="1"
+                        Padding="20,10,20,16"
+                        Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                        VerticalScrollBarVisibility="Auto"
+                        VerticalScrollMode="Enabled"
+                        HorizontalScrollMode="Disabled"
+                        HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="22">
+                            <StackPanel
+                                HorizontalAlignment="Stretch"
+                                Spacing="10"
+                                Visibility="{x:Bind SelectedGame.GameMediaVisibility, Mode=OneWay}">
+                                <TextBlock
+                                    FontSize="11"
+                                    CharacterSpacing="40"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Text="GAME MEDIA" />
+                                <Grid
+                                    x:Name="MediaViewportHost"
+                                    Height="180"
+                                    ColumnSpacing="8"
+                                    SizeChanged="MediaViewportHost_SizeChanged">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border
+                                        x:Name="MediaTileHost0"
+                                        Grid.Column="0"
+                                        Background="Black"
+                                        CornerRadius="4"
+                                        Tag="0"
+                                        Tapped="MediaTile_Tapped">
+                                        <Grid>
                                             <Image
-                                                x:Name="CoverImage"
+                                                x:Name="MediaTile0"
                                                 Stretch="UniformToFill"
-                                                Visibility="{x:Bind CoverArtVisibility}" />
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center" />
+                                            <Grid x:Name="MediaTile0Badge" Visibility="Collapsed">
+                                                <Ellipse Width="28" Height="28" HorizontalAlignment="Center" VerticalAlignment="Center" Fill="#CC000000" />
+                                                <FontIcon HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" Glyph="&#xE768;" FontSize="12" Foreground="White" />
+                                            </Grid>
+                                            <Border
+                                                x:Name="MediaTile0Select"
+                                                BorderBrush="#E6E6E6"
+                                                BorderThickness="2"
+                                                CornerRadius="4"
+                                                IsHitTestVisible="False"
+                                                Visibility="Collapsed" />
                                         </Grid>
                                     </Border>
-                                    <StackPanel
-                                        Grid.Row="1"
-                                        Padding="10,8,10,10"
-                                        Spacing="6">
-                                        <Grid Height="40" HorizontalAlignment="Stretch">
-                                            <TextBlock
-                                                HorizontalAlignment="Stretch"
-                                                VerticalAlignment="Center"
-                                                FontSize="{x:Bind TitleFontSize}"
-                                                FontWeight="SemiBold"
-                                                Text="{x:Bind Name}"
-                                                TextWrapping="WrapWholeWords"
-                                                TextTrimming="CharacterEllipsis"
-                                                MaxLines="2"
-                                                TextAlignment="Center" />
-                                        </Grid>
-                                        <Grid>
-                                            <Button
-                                                Tag="{x:Bind}"
-                                                HorizontalAlignment="Stretch"
-                                                Content="Play"
-                                                Visibility="{x:Bind PlayButtonVisibility}"
-                                                Click="PrimaryActionButton_Click">
-                                                <Button.Resources>
-                                                    <SolidColorBrush x:Key="ButtonBackground" Color="#0F9D58" />
-                                                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#18C46A" />
-                                                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#0C7A45" />
-                                                    <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#0F9D58" Opacity="0.5" />
-                                                    <SolidColorBrush x:Key="ButtonForeground" Color="White" />
-                                                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
-                                                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
-                                                    <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" Opacity="0.7" />
-                                                    <SolidColorBrush x:Key="ButtonBorderBrush" Color="#0F9D58" />
-                                                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#18C46A" />
-                                                    <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#0C7A45" />
-                                                    <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#0F9D58" Opacity="0.5" />
-                                                </Button.Resources>
-                                            </Button>
-                                            <Button
-                                                Tag="{x:Bind}"
-                                                HorizontalAlignment="Stretch"
-                                                Content="Install"
-                                                Visibility="{x:Bind InstallButtonVisibility}"
-                                                Click="PrimaryActionButton_Click" />
-                                        </Grid>
-                                    </StackPanel>
                                     <Border
-                                        Grid.RowSpan="2"
-                                        IsHitTestVisible="False"
-                                        BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="8"
-                                        Visibility="{x:Bind SelectionVisibility, Mode=OneWay}" />
+                                        x:Name="MediaTileHost1"
+                                        Grid.Column="1"
+                                        Background="Black"
+                                        CornerRadius="4"
+                                        Tag="1"
+                                        Tapped="MediaTile_Tapped">
+                                        <Grid>
+                                            <Image
+                                                x:Name="MediaTile1"
+                                                Stretch="UniformToFill"
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center" />
+                                            <Grid x:Name="MediaTile1Badge" Visibility="Collapsed">
+                                                <Ellipse Width="28" Height="28" HorizontalAlignment="Center" VerticalAlignment="Center" Fill="#CC000000" />
+                                                <FontIcon HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" Glyph="&#xE768;" FontSize="12" Foreground="White" />
+                                            </Grid>
+                                            <Border
+                                                x:Name="MediaTile1Select"
+                                                BorderBrush="#E6E6E6"
+                                                BorderThickness="2"
+                                                CornerRadius="4"
+                                                IsHitTestVisible="False"
+                                                Visibility="Collapsed" />
+                                        </Grid>
+                                    </Border>
+                                    <Border
+                                        x:Name="MediaTileHost2"
+                                        Grid.Column="2"
+                                        Background="Black"
+                                        CornerRadius="4"
+                                        Tag="2"
+                                        Tapped="MediaTile_Tapped">
+                                        <Grid>
+                                            <Image
+                                                x:Name="MediaTile2"
+                                                Stretch="UniformToFill"
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center" />
+                                            <Grid x:Name="MediaTile2Badge" Visibility="Collapsed">
+                                                <Ellipse Width="28" Height="28" HorizontalAlignment="Center" VerticalAlignment="Center" Fill="#CC000000" />
+                                                <FontIcon HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" Glyph="&#xE768;" FontSize="12" Foreground="White" />
+                                            </Grid>
+                                            <Border
+                                                x:Name="MediaTile2Select"
+                                                BorderBrush="#E6E6E6"
+                                                BorderThickness="2"
+                                                CornerRadius="4"
+                                                IsHitTestVisible="False"
+                                                Visibility="Collapsed" />
+                                        </Grid>
+                                    </Border>
+                                    <Button
+                                        x:Name="GameMediaPrevButton"
+                                        Grid.Column="0"
+                                        Width="36"
+                                        Height="64"
+                                        Padding="0"
+                                        HorizontalAlignment="Left"
+                                        VerticalAlignment="Center"
+                                        Margin="6,0,0,0"
+                                        Click="GameMediaPrev_Click"
+                                        ToolTipService.ToolTip="Previous">
+                                        <Button.Resources>
+                                            <SolidColorBrush x:Key="ButtonBackground" Color="#99000000" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#CC000000" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#B3000000" />
+                                            <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+                                        </Button.Resources>
+                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE76B;" FontSize="16" />
+                                    </Button>
+                                    <Button
+                                        x:Name="GameMediaNextButton"
+                                        Grid.Column="2"
+                                        Width="36"
+                                        Height="64"
+                                        Padding="0"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,6,0"
+                                        Click="GameMediaNext_Click"
+                                        ToolTipService.ToolTip="Next">
+                                        <Button.Resources>
+                                            <SolidColorBrush x:Key="ButtonBackground" Color="#99000000" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#CC000000" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#B3000000" />
+                                            <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+                                        </Button.Resources>
+                                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE76C;" FontSize="16" />
+                                    </Button>
                                 </Grid>
-                            </Border>
-                        </DataTemplate>
-                    </ItemsRepeater.ItemTemplate>
-                </ItemsRepeater>
-            </ScrollViewer>
-        </ItemsRepeaterScrollHost>
+                            </StackPanel>
+                            <StackPanel
+                                Spacing="10"
+                                Visibility="{x:Bind SelectedGame.AboutTheGameVisibility, Mode=OneWay}">
+                                <TextBlock
+                                    FontSize="11"
+                                    CharacterSpacing="40"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Text="ABOUT THE GAME" />
+                                <TextBlock
+                                    FontSize="15"
+                                    LineHeight="22"
+                                    Opacity="0.88"
+                                    TextWrapping="Wrap"
+                                    Text="{x:Bind SelectedGame.AboutTheGame, Mode=OneWay}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                    </Grid>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+    </Grid>
+    <Grid
+        x:Name="TheaterOverlay"
+        Visibility="Collapsed"
+        Background="#E6000000"
+        Tapped="TheaterBackdrop_Tapped">
+        <Grid
+            MaxWidth="1200"
+            MaxHeight="780"
+            Margin="48"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch"
+            Tapped="TheaterContent_Tapped">
+            <Border Background="Black" CornerRadius="4">
+                <Grid>
+                    <Image
+                        x:Name="TheaterImage"
+                        Stretch="Uniform"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center" />
+                    <MediaPlayerElement
+                        x:Name="TheaterPlayer"
+                        Stretch="Uniform"
+                        AutoPlay="True"
+                        AreTransportControlsEnabled="True"
+                        Visibility="Collapsed" />
+                </Grid>
+            </Border>
+            <Button
+                Width="44"
+                Height="72"
+                Padding="0"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Center"
+                Margin="8,0,0,0"
+                Click="TheaterPrev_Click"
+                ToolTipService.ToolTip="Previous">
+                <Button.Resources>
+                    <SolidColorBrush x:Key="ButtonBackground" Color="#99000000" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#CC000000" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#B3000000" />
+                    <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                    <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+                </Button.Resources>
+                <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE76B;" FontSize="18" />
+            </Button>
+            <Button
+                Width="44"
+                Height="72"
+                Padding="0"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                Margin="0,0,8,0"
+                Click="TheaterNext_Click"
+                ToolTipService.ToolTip="Next">
+                <Button.Resources>
+                    <SolidColorBrush x:Key="ButtonBackground" Color="#99000000" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#CC000000" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#B3000000" />
+                    <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                    <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+                </Button.Resources>
+                <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE76C;" FontSize="18" />
+            </Button>
+            <Button
+                Width="40"
+                Height="40"
+                Padding="0"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,8,8,0"
+                Click="TheaterClose_Click"
+                ToolTipService.ToolTip="Exit theater mode">
+                <Button.Resources>
+                    <SolidColorBrush x:Key="ButtonBackground" Color="#99000000" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#CC000000" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#B3000000" />
+                    <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                    <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent" />
+                </Button.Resources>
+                <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE711;" FontSize="14" />
+            </Button>
+        </Grid>
+    </Grid>
     </Grid>
 </Page>

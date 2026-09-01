@@ -1,6 +1,6 @@
 namespace EZManifest.Models;
 
-public sealed class DepotDisplayInfo
+public sealed record DepotDisplayInfo
 {
     public string DepotId { get; init; } = string.Empty;
     public string ManifestId { get; init; } = string.Empty;
@@ -13,8 +13,10 @@ public sealed class DepotDisplayInfo
     public bool HasLocalManifest { get; init; }
     public bool AutoSelected { get; init; }
     public bool IsDlc { get; init; }
+    public bool IsShared { get; init; }
     public bool IsLanguage { get; init; }
     public string LanguageCode { get; init; } = string.Empty;
+    public string? OsArch { get; init; }
 
     public string SizeText => FormatBytes(SizeBytes);
     public string DownloadText => FormatBytes(DownloadBytes);

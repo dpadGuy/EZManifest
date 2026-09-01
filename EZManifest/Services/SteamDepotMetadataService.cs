@@ -9,6 +9,10 @@ namespace EZManifest.Services;
 
 public sealed class SteamDepotMetadataService
 {
+    private readonly Dictionary<string, Dictionary<string, DepotMetadata>> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _sizeCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _cacheLock = new();
+
     private static readonly HttpClient SteamCmdClient = new(new SocketsHttpHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
@@ -28,26 +32,50 @@ public sealed class SteamDepotMetadataService
         IEnumerable<string>? relatedAppIds = null,
         CancellationToken cancellationToken = default)
     {
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(appId, out var cached) && HasDepotCoverage(cached, knownDepotIds))
+            {
+                AppLog.Write($"[DepotMetadata] Using cached metadata for appId={appId} ({cached.Count} depot(s))");
+                return new Dictionary<string, DepotMetadata>(cached, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
         var result = new Dictionary<string, DepotMetadata>(StringComparer.OrdinalIgnoreCase);
         var fetchedApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var appNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
             AppLog.Write($"[DepotMetadata] Resolving OS for appId={appId}");
-            await MergeFromSteamPicsAsync(appId, knownDepotIds, relatedAppIds, result, cancellationToken);
+            await MergeFromSteamPicsAsync(appId, knownDepotIds, relatedAppIds, result, appNames, cancellationToken);
 
-            if (!HasOsInfo(result, knownDepotIds))
+            if (!HasDepotCoverage(result, knownDepotIds))
             {
-                AppLog.Write($"[DepotMetadata] Steam PICS missed OS info for appId={appId}; trying steamcmd");
-                await MergeAppDepotsAsync(appId, result, fetchedApps, dlcOverride: false, cancellationToken);
-                var related = CollectRelatedAppIds(result, knownDepotIds, relatedAppIds);
+                AppLog.Write($"[DepotMetadata] Steam PICS incomplete for appId={appId}; trying steamcmd");
+                await MergeAppDepotsAsync(appId, result, fetchedApps, appNames, dlcOverride: false, cancellationToken);
+                var related = CollectRelatedAppIds(appId, result, knownDepotIds, relatedAppIds);
                 foreach (string relatedAppId in related)
-                    await MergeAppDepotsAsync(relatedAppId, result, fetchedApps, dlcOverride: true, cancellationToken);
+                    await MergeAppDepotsAsync(relatedAppId, result, fetchedApps, appNames, dlcOverride: true, cancellationToken);
             }
 
+            try
+            {
+                await ResolveDepotTitlesAsync(appId, result, appNames, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write(ex, $"[DepotMetadata] Title lookup failed for appId={appId}");
+            }
             AppLog.Write(
                 $"[DepotMetadata] Loaded {result.Count} depot(s) for appId={appId} " +
                 $"with OS: {result.Values.Count(meta => !string.IsNullOrWhiteSpace(meta.OsList))}");
+
+            if (result.Count > 0)
+            {
+                lock (_cacheLock)
+                    _cache[appId] = new Dictionary<string, DepotMetadata>(result, StringComparer.OrdinalIgnoreCase);
+            }
         }
         catch (Exception ex)
         {
@@ -57,7 +85,184 @@ public sealed class SteamDepotMetadataService
         return result;
     }
 
+    public async Task<long?> EstimateWindowsInstallSizeAsync(
+        string appId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(appId))
+            return null;
+
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(appId, out var cached))
+            {
+                long? fromMeta = SumWindowsGameSize(cached.Values);
+                if (fromMeta is > 0)
+                    return fromMeta;
+            }
+
+            if (_sizeCache.TryGetValue(appId, out long cachedSize) && cachedSize > 0)
+                return cachedSize;
+        }
+
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+            using var document = await FetchAppInfoAsync(appId, timeout.Token, maxAttempts: 2);
+            long? sum = SumWindowsGameSizeFromSteamCmd(document, appId);
+            if (sum is > 0)
+            {
+                lock (_cacheLock)
+                    _sizeCache[appId] = sum.Value;
+            }
+
+            return sum;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
+    private static long? SumWindowsGameSize(IEnumerable<DepotMetadata> depots)
+    {
+        var playable = depots
+            .Where(depot =>
+                !depot.IsDlc
+                && !depot.IsShared
+                && !SteamDepotPlatformFilter.IsMacOsOrLinuxOnly(depot)
+                && IsWindowsOrUnspecified(depot.OsList)
+                && depot.SizeBytes is > 0)
+            .ToList();
+
+        var core = playable
+            .Where(depot => string.IsNullOrWhiteSpace(depot.Language))
+            .ToList();
+        var localized = playable
+            .Where(depot => !string.IsNullOrWhiteSpace(depot.Language))
+            .ToList();
+
+        long sum = 0;
+        bool any = false;
+
+        if (core.Count > 0)
+        {
+            core = SteamDepotPlatformFilter.PreferHostArch(core, depot => depot.OsArch);
+            sum += core.Sum(depot => depot.SizeBytes!.Value);
+            any = true;
+        }
+
+        if (localized.Count > 0)
+        {
+            var language = PickLanguageDepots(localized);
+            if (language.Count > 0)
+            {
+                sum += language.Sum(depot => depot.SizeBytes!.Value);
+                any = true;
+            }
+        }
+
+        return any ? sum : null;
+    }
+
+    private static List<DepotMetadata> PickLanguageDepots(List<DepotMetadata> localized)
+    {
+        var groups = localized
+            .GroupBy(depot => depot.Language!, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (groups.Count == 0)
+            return [];
+
+        var chosen = groups.FirstOrDefault(group =>
+                group.Key.Equals("english", StringComparison.OrdinalIgnoreCase))
+            ?? groups.MaxBy(group => group.Sum(depot => depot.SizeBytes ?? 0));
+
+        return chosen is null
+            ? []
+            : SteamDepotPlatformFilter.PreferHostArch(chosen.ToList(), depot => depot.OsArch);
+    }
+
+    private static long? SumWindowsGameSizeFromSteamCmd(JsonDocument? document, string appId)
+    {
+        if (document is null
+            || document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("data", out var data)
+            || !TryGetApp(data, appId, out var app)
+            || app.ValueKind != JsonValueKind.Object
+            || !app.TryGetProperty("depots", out var depots)
+            || depots.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        bool appIsDlc = AppLooksLikeDlc(app);
+        var dlcAppIds = ReadDlcAppIds(app, depots);
+        var parsed = new List<DepotMetadata>();
+
+        foreach (var depot in depots.EnumerateObject())
+        {
+            if (!ulong.TryParse(depot.Name, out _) || depot.Value.ValueKind != JsonValueKind.Object)
+                continue;
+
+            var platform = ReadPlatformConfig(depot.Value);
+            string? name = depot.Value.TryGetProperty("name", out var nameNode)
+                ? nameNode.GetString()
+                : null;
+            string? inferredOs = InferOsList(platform.OsList, name);
+            string? language = platform.Language ?? SteamLanguageNames.InferFromName(name);
+
+            long? size = null;
+            if (depot.Value.TryGetProperty("manifests", out var manifests) &&
+                manifests.ValueKind == JsonValueKind.Object &&
+                manifests.TryGetProperty("public", out var publicManifest))
+            {
+                size = ReadLong(publicManifest, "size");
+            }
+
+            size ??= ReadLong(depot.Value, "maxsize");
+            if (size is not > 0)
+                continue;
+
+            string? dlcAppId = ReadString(depot.Value, "dlcappid");
+            if (string.IsNullOrWhiteSpace(dlcAppId) && (appIsDlc || dlcAppIds.Contains(depot.Name)))
+                dlcAppId = appIsDlc ? appId : depot.Name;
+
+            bool isShared = IsTruthy(depot.Value, "sharedinstall")
+                || !string.IsNullOrWhiteSpace(ReadString(depot.Value, "depotfromapp"));
+            bool isDlc = !isShared && (
+                appIsDlc
+                || !string.IsNullOrWhiteSpace(dlcAppId)
+                || dlcAppIds.Contains(depot.Name)
+                || NameLooksLikeDlc(name));
+
+            parsed.Add(new DepotMetadata
+            {
+                DepotId = depot.Name,
+                Name = name ?? string.Empty,
+                OsList = inferredOs,
+                OsArch = platform.OsArch,
+                Language = language,
+                IsDlc = isDlc,
+                IsShared = isShared,
+                SizeBytes = size
+            });
+        }
+
+        return SumWindowsGameSize(parsed);
+    }
+
+    private static bool IsWindowsOrUnspecified(string? osList)
+    {
+        if (string.IsNullOrWhiteSpace(osList))
+            return true;
+
+        return osList.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(token => token.Equals("windows", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static HashSet<string> CollectRelatedAppIds(
+        string parentAppId,
         Dictionary<string, DepotMetadata> result,
         IEnumerable<string>? knownDepotIds,
         IEnumerable<string>? relatedAppIds)
@@ -82,62 +287,335 @@ public sealed class SteamDepotMetadataService
                 if (result.ContainsKey(depotId))
                     continue;
 
-                related.Add(depotId);
+                // Soundtrack / DLC packages are often appId = depotId with the last digit zeroed.
+                // Do not treat the depot id itself as an app — that marks every hit as DLC
+                // and can dump the whole list into one dialog.
                 string? sibling = RelatedAppId(depotId);
                 if (sibling is not null)
                     related.Add(sibling);
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(parentAppId))
+            related.Remove(parentAppId);
+
         return related;
     }
 
-    private static bool HasOsInfo(
+    private static bool HasDepotCoverage(
         Dictionary<string, DepotMetadata> result,
         IEnumerable<string>? knownDepotIds)
     {
-        if (knownDepotIds is not null)
-        {
-            foreach (string depotId in knownDepotIds)
-            {
-                if (result.TryGetValue(depotId, out var meta) && !string.IsNullOrWhiteSpace(meta.OsList))
-                    return true;
-            }
+        if (knownDepotIds is null)
+            return result.Count > 0;
 
-            return false;
+        bool anyKnown = false;
+        foreach (string depotId in knownDepotIds)
+        {
+            anyKnown = true;
+            if (!result.ContainsKey(depotId))
+                return false;
         }
 
-        return result.Values.Any(meta => !string.IsNullOrWhiteSpace(meta.OsList));
+        return anyKnown;
     }
+
+    private static void RememberAppName(
+        Dictionary<string, string> appNames,
+        string appId,
+        string? name)
+    {
+        if (!string.IsNullOrWhiteSpace(appId) && !string.IsNullOrWhiteSpace(name))
+            appNames[appId] = name.Trim();
+    }
+
+    private static void ApplyDlcAppNames(
+        Dictionary<string, DepotMetadata> result,
+        IReadOnlyDictionary<string, string> appNames,
+        string parentAppId)
+    {
+        appNames.TryGetValue(parentAppId, out string? parentName);
+
+        foreach (var (depotId, meta) in result.ToList())
+        {
+            if (!meta.IsDlc)
+                continue;
+
+            string? dlcTitle = null;
+            if (!string.IsNullOrWhiteSpace(meta.DlcAppId)
+                && appNames.TryGetValue(meta.DlcAppId, out string? fromDlcApp))
+            {
+                dlcTitle = fromDlcApp;
+            }
+            else if (appNames.TryGetValue(depotId, out string? fromDepotId))
+            {
+                dlcTitle = fromDepotId;
+            }
+
+            if (string.IsNullOrWhiteSpace(dlcTitle) || !DepotNameNeedsDlcTitle(meta.Name, parentName, dlcTitle))
+                continue;
+
+            result[depotId] = CopyWithName(meta, dlcTitle);
+        }
+    }
+
+    private static bool DepotNameNeedsDlcTitle(string? depotName, string? parentName, string dlcTitle)
+    {
+        if (string.IsNullOrWhiteSpace(depotName))
+            return true;
+        if (!string.IsNullOrWhiteSpace(parentName)
+            && depotName.Equals(parentName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (depotName.StartsWith("DLC ", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
+    }
+
+    private async Task ResolveDepotTitlesAsync(
+        string parentAppId,
+        Dictionary<string, DepotMetadata> result,
+        Dictionary<string, string> appNames,
+        CancellationToken cancellationToken)
+    {
+        await ImportNamesFromSteamCmdAsync(parentAppId, result, appNames, cancellationToken);
+
+        appNames.TryGetValue(parentAppId, out string? parentName);
+        var lookupIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var meta in result.Values)
+        {
+            if (!meta.IsDlc || !DepotNameNeedsDlcTitle(meta.Name, parentName, "x"))
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(meta.DlcAppId))
+                lookupIds.Add(meta.DlcAppId);
+            else
+                lookupIds.Add(meta.DepotId);
+        }
+
+        await Parallel.ForEachAsync(
+            lookupIds,
+            new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken },
+            async (id, token) =>
+            {
+                if (HasRealTitle(appNames, id, parentName))
+                    return;
+
+                string? title = await LookupSteamCmdAppNameAsync(id, token);
+                if (string.IsNullOrWhiteSpace(title))
+                    title = await LookupStoreAppNameAsync(id, token);
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    RememberAppName(appNames, id, title);
+                    AppLog.Write($"[DepotMetadata] Title {id} → '{title}'");
+                }
+            });
+
+        ApplyDlcAppNames(result, appNames, parentAppId);
+
+        foreach (var (depotId, meta) in result.ToList())
+        {
+            if (!DepotNameNeedsDlcTitle(meta.Name, parentName, "x"))
+                continue;
+
+            if (TryPickTitle(appNames, depotId, meta.DlcAppId, parentName, out string title))
+                result[depotId] = CopyWithName(meta, title);
+        }
+    }
+
+    private async Task ImportNamesFromSteamCmdAsync(
+        string appId,
+        Dictionary<string, DepotMetadata> result,
+        Dictionary<string, string> appNames,
+        CancellationToken cancellationToken)
+    {
+        using var document = await FetchAppInfoAsync(appId, cancellationToken);
+        if (document is null
+            || !document.RootElement.TryGetProperty("data", out var data)
+            || !TryGetApp(data, appId, out var app))
+        {
+            return;
+        }
+
+        string? appName = app.TryGetProperty("common", out var common)
+            ? ReadString(common, "name")
+            : null;
+        RememberAppName(appNames, appId, appName);
+
+        if (!app.TryGetProperty("depots", out var depots) || depots.ValueKind != JsonValueKind.Object)
+            return;
+
+        foreach (var depot in depots.EnumerateObject())
+        {
+            if (!ulong.TryParse(depot.Name, out _) || depot.Value.ValueKind != JsonValueKind.Object)
+                continue;
+
+            string? depotName = depot.Value.TryGetProperty("name", out var nameNode)
+                ? nameNode.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(depotName))
+                continue;
+
+            RememberAppName(appNames, depot.Name, depotName);
+            if (result.TryGetValue(depot.Name, out var meta)
+                && DepotNameNeedsDlcTitle(meta.Name, appName, depotName))
+            {
+                result[depot.Name] = CopyWithName(meta, depotName);
+            }
+        }
+    }
+
+    private async Task<string?> LookupSteamCmdAppNameAsync(string appId, CancellationToken cancellationToken)
+    {
+        using var document = await FetchAppInfoAsync(appId, cancellationToken);
+        if (document is null
+            || !document.RootElement.TryGetProperty("data", out var data)
+            || !TryGetApp(data, appId, out var app)
+            || !app.TryGetProperty("common", out var common))
+        {
+            return null;
+        }
+
+        return ReadString(common, "name");
+    }
+
+    private async Task<string?> LookupStoreAppNameAsync(string appId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"https://store.steampowered.com/api/appdetails?appids={appId}&filters=basic");
+            request.Headers.TryAddWithoutValidation("User-Agent", "EZManifest");
+
+            using var response = await SteamCmdClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty(appId, out var entry)
+                || !entry.TryGetProperty("success", out var success)
+                || success.ValueKind != JsonValueKind.True
+                || !entry.TryGetProperty("data", out var data))
+            {
+                return null;
+            }
+
+            return ReadString(data, "name");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[DepotMetadata] Store name lookup failed for {appId}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static bool HasRealTitle(
+        IReadOnlyDictionary<string, string> appNames,
+        string id,
+        string? parentName)
+    {
+        return appNames.TryGetValue(id, out string? title)
+            && !string.IsNullOrWhiteSpace(title)
+            && !title.StartsWith("DLC ", StringComparison.OrdinalIgnoreCase)
+            && (string.IsNullOrWhiteSpace(parentName)
+                || !title.Equals(parentName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TryPickTitle(
+        IReadOnlyDictionary<string, string> appNames,
+        string depotId,
+        string? dlcAppId,
+        string? parentName,
+        out string title)
+    {
+        if (HasRealTitle(appNames, depotId, parentName))
+        {
+            title = appNames[depotId];
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(dlcAppId) && HasRealTitle(appNames, dlcAppId, parentName))
+        {
+            title = appNames[dlcAppId];
+            return true;
+        }
+
+        title = string.Empty;
+        return false;
+    }
+
+    private static DepotMetadata CopyWithName(DepotMetadata meta, string name) =>
+        new()
+        {
+            DepotId = meta.DepotId,
+            Name = name,
+            Configuration = meta.Configuration,
+            OsList = meta.OsList,
+            OsArch = meta.OsArch,
+            Language = meta.Language,
+            IsOptional = meta.IsOptional,
+            IsDlc = meta.IsDlc,
+            IsShared = meta.IsShared,
+            HasManifests = meta.HasManifests,
+            DlcAppId = meta.DlcAppId,
+            SizeBytes = meta.SizeBytes,
+            DownloadBytes = meta.DownloadBytes
+        };
 
     private async Task MergeAppDepotsAsync(
         string appId,
         Dictionary<string, DepotMetadata> result,
         HashSet<string> fetchedApps,
+        Dictionary<string, string> appNames,
         bool dlcOverride,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(appId) || !fetchedApps.Add(appId))
             return;
 
+        try
+        {
+            await MergeAppDepotsCoreAsync(appId, result, fetchedApps, appNames, dlcOverride, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, $"[DepotMetadata] steamcmd parse failed for appId={appId}");
+        }
+    }
+
+    private async Task MergeAppDepotsCoreAsync(
+        string appId,
+        Dictionary<string, DepotMetadata> result,
+        HashSet<string> fetchedApps,
+        Dictionary<string, string> appNames,
+        bool dlcOverride,
+        CancellationToken cancellationToken)
+    {
         using var document = await FetchAppInfoAsync(appId, cancellationToken);
         if (document is null
+            || document.RootElement.ValueKind != JsonValueKind.Object
             || !document.RootElement.TryGetProperty("data", out var data)
             || !TryGetApp(data, appId, out var app)
-            || !app.TryGetProperty("depots", out var depots))
+            || app.ValueKind != JsonValueKind.Object)
         {
             return;
         }
 
-        bool appIsDlc = dlcOverride || AppLooksLikeDlc(app);
-        var dlcAppIds = ReadDlcAppIds(app, depots);
         string? appName = app.TryGetProperty("common", out var common)
             ? ReadString(common, "name")
             : null;
+        RememberAppName(appNames, appId, appName);
+
+        if (!app.TryGetProperty("depots", out var depots) || depots.ValueKind != JsonValueKind.Object)
+            return;
+
+        bool appIsDlc = dlcOverride || AppLooksLikeDlc(app);
+        var dlcAppIds = ReadDlcAppIds(app, depots);
 
         foreach (var depot in depots.EnumerateObject())
         {
-            if (!ulong.TryParse(depot.Name, out _))
+            if (!ulong.TryParse(depot.Name, out _) || depot.Value.ValueKind != JsonValueKind.Object)
                 continue;
 
             var platform = ReadPlatformConfig(depot.Value);
@@ -148,7 +626,8 @@ public sealed class SteamDepotMetadataService
                 name = appName;
 
             string? inferredOs = InferOsList(platform.OsList, name);
-            var platformWithOs = platform with { OsList = inferredOs };
+            string? language = platform.Language ?? SteamLanguageNames.InferFromName(name);
+            var platformWithOs = platform with { OsList = inferredOs, Language = language };
             string configuration = BuildConfiguration(platformWithOs, name);
 
             long? size = null;
@@ -191,7 +670,7 @@ public sealed class SteamDepotMetadataService
                 Configuration = configuration,
                 OsList = inferredOs,
                 OsArch = platform.OsArch,
-                Language = platform.Language,
+                Language = language,
                 IsOptional = platform.IsOptional,
                 IsDlc = isDlc,
                 IsShared = isShared,
@@ -214,7 +693,7 @@ public sealed class SteamDepotMetadataService
         }
 
         foreach (string dlcAppId in dlcAppIds)
-            await MergeAppDepotsAsync(dlcAppId, result, fetchedApps, dlcOverride: true, cancellationToken);
+            await MergeAppDepotsAsync(dlcAppId, result, fetchedApps, appNames, dlcOverride: true, cancellationToken);
     }
 
     private async Task MergeFromSteamPicsAsync(
@@ -222,13 +701,14 @@ public sealed class SteamDepotMetadataService
         IEnumerable<string>? knownDepotIds,
         IEnumerable<string>? relatedAppIds,
         Dictionary<string, DepotMetadata> result,
+        Dictionary<string, string> appNames,
         CancellationToken cancellationToken)
     {
         var ids = new HashSet<uint>();
         if (uint.TryParse(appId, out uint parentId))
             ids.Add(parentId);
 
-        foreach (string related in CollectRelatedAppIds(result, knownDepotIds, relatedAppIds))
+        foreach (string related in CollectRelatedAppIds(appId, result, knownDepotIds, relatedAppIds))
         {
             if (uint.TryParse(related, out uint relatedId))
                 ids.Add(relatedId);
@@ -246,7 +726,14 @@ public sealed class SteamDepotMetadataService
         }
 
         foreach (var (id, keyValues) in infos)
-            MergeKeyValueApp(id.ToString(CultureInfo.InvariantCulture), keyValues, result, dlcOverride: id.ToString(CultureInfo.InvariantCulture) != appId);
+        {
+            MergeKeyValueApp(
+                id.ToString(CultureInfo.InvariantCulture),
+                keyValues,
+                result,
+                appNames,
+                dlcOverride: id.ToString(CultureInfo.InvariantCulture) != appId);
+        }
 
         var extra = new HashSet<uint>();
         foreach (var meta in result.Values)
@@ -262,7 +749,7 @@ public sealed class SteamDepotMetadataService
         {
             infos = await SteamService.GetAppInfosAsync(extra, cancellationToken);
             foreach (var (id, keyValues) in infos)
-                MergeKeyValueApp(id.ToString(CultureInfo.InvariantCulture), keyValues, result, dlcOverride: true);
+                MergeKeyValueApp(id.ToString(CultureInfo.InvariantCulture), keyValues, result, appNames, dlcOverride: true);
         }
         catch (Exception ex)
         {
@@ -274,15 +761,18 @@ public sealed class SteamDepotMetadataService
         string appId,
         KeyValue app,
         Dictionary<string, DepotMetadata> result,
+        Dictionary<string, string> appNames,
         bool dlcOverride)
     {
+        string? appName = KvValue(app["common"]["name"]);
+        RememberAppName(appNames, appId, appName);
+
         KeyValue depots = app["depots"];
         if (depots.Children.Count == 0)
             return;
 
         bool appIsDlc = dlcOverride || AppLooksLikeDlc(app);
         var dlcAppIds = ReadDlcAppIds(app, depots);
-        string? appName = KvValue(app["common"]["name"]);
 
         foreach (var depot in depots.Children)
         {
@@ -291,9 +781,9 @@ public sealed class SteamDepotMetadataService
 
             string? osList = KvValue(depot["config"]["oslist"]);
             string? osArch = KvValue(depot["config"]["osarch"]);
-            string? language = KvValue(depot["config"]["language"]);
-            bool isOptional = IsTruthy(depot, "optional") || IsTruthy(depot["config"], "optional");
             string? name = KvValue(depot["name"]) ?? appName;
+            string? language = KvValue(depot["config"]["language"]) ?? SteamLanguageNames.InferFromName(name);
+            bool isOptional = IsTruthy(depot, "optional") || IsTruthy(depot["config"], "optional");
             string? inferredOs = InferOsList(osList, name);
             string configuration = BuildConfiguration(
                 new DepotPlatformConfig(inferredOs, osArch, language, isOptional),
@@ -386,10 +876,13 @@ public sealed class SteamDepotMetadataService
         return value is "1" or "true" or "True";
     }
 
-    private async Task<JsonDocument?> FetchAppInfoAsync(string appId, CancellationToken cancellationToken)
+    private async Task<JsonDocument?> FetchAppInfoAsync(
+        string appId,
+        CancellationToken cancellationToken,
+        int maxAttempts = 3)
     {
         Exception? lastError = null;
-        for (int attempt = 1; attempt <= 3; attempt++)
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
@@ -415,7 +908,7 @@ public sealed class SteamDepotMetadataService
                 document.Dispose();
                 await Task.Delay(500 * attempt, cancellationToken);
             }
-            catch (Exception ex) when (attempt < 3)
+            catch (Exception ex) when (attempt < maxAttempts)
             {
                 lastError = ex;
                 AppLog.Write($"[DepotMetadata] Retry {attempt} for appId={appId}: {ex.Message}");
@@ -434,19 +927,32 @@ public sealed class SteamDepotMetadataService
 
     private static bool HasAppData(JsonDocument document, string appId)
     {
-        if (!document.RootElement.TryGetProperty("data", out var data)
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("data", out var data)
             || !TryGetApp(data, appId, out var app))
         {
             return false;
         }
 
-        return app.ValueKind == JsonValueKind.Object
-            && app.TryGetProperty("depots", out var depots)
-            && depots.ValueKind == JsonValueKind.Object;
+        if (app.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (app.TryGetProperty("depots", out var depots) && depots.ValueKind == JsonValueKind.Object)
+            return true;
+
+        return app.TryGetProperty("common", out var common)
+            && common.ValueKind == JsonValueKind.Object
+            && !string.IsNullOrWhiteSpace(ReadString(common, "name"));
     }
 
     private static bool TryGetApp(JsonElement data, string appId, out JsonElement app)
     {
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            app = default;
+            return false;
+        }
+
         if (data.TryGetProperty(appId, out app))
             return true;
 
@@ -486,11 +992,17 @@ public sealed class SteamDepotMetadataService
             }
         }
 
-        foreach (var depot in depots.EnumerateObject())
+        if (depots.ValueKind == JsonValueKind.Object)
         {
-            string? dlcAppId = ReadString(depot.Value, "dlcappid");
-            if (!string.IsNullOrWhiteSpace(dlcAppId))
-                ids.Add(dlcAppId);
+            foreach (var depot in depots.EnumerateObject())
+            {
+                if (depot.Value.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                string? dlcAppId = ReadString(depot.Value, "dlcappid");
+                if (!string.IsNullOrWhiteSpace(dlcAppId))
+                    ids.Add(dlcAppId);
+            }
         }
 
         return ids;
@@ -549,7 +1061,9 @@ public sealed class SteamDepotMetadataService
     private static DepotPlatformConfig ReadPlatformConfig(JsonElement depot)
     {
         JsonElement config = default;
-        bool hasConfig = depot.TryGetProperty("config", out config);
+        bool hasConfig = depot.ValueKind == JsonValueKind.Object
+            && depot.TryGetProperty("config", out config)
+            && config.ValueKind == JsonValueKind.Object;
 
         return new DepotPlatformConfig(
             OsList: hasConfig ? ReadString(config, "oslist") : null,
@@ -587,7 +1101,8 @@ public sealed class SteamDepotMetadataService
 
     private static string? ReadString(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value))
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var value))
             return null;
 
         return value.ValueKind switch
@@ -600,7 +1115,8 @@ public sealed class SteamDepotMetadataService
 
     private static bool IsTruthy(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value))
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var value))
             return false;
 
         return value.ValueKind switch
@@ -620,7 +1136,8 @@ public sealed class SteamDepotMetadataService
 
     private static long? ReadLong(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value))
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var value))
             return null;
 
         if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out long number))

@@ -64,6 +64,27 @@
                 VerticalAlignment="Center"
                 Visibility="Collapsed"
                 SizeChanged="TitleBarSearchPanel_SizeChanged">
+                <ToggleButton
+                    x:Name="LibraryGridViewButton"
+                    Width="36"
+                    Height="32"
+                    Padding="0"
+                    VerticalAlignment="Center"
+                    ToolTipService.ToolTip="Card view"
+                    Click="LibraryGridViewButton_Click">
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE8EA;" FontSize="14" />
+                </ToggleButton>
+                <ToggleButton
+                    x:Name="LibraryListViewButton"
+                    Width="36"
+                    Height="32"
+                    Padding="0"
+                    VerticalAlignment="Center"
+                    IsChecked="True"
+                    ToolTipService.ToolTip="List view"
+                    Click="LibraryListViewButton_Click">
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE90C;" FontSize="14" />
+                </ToggleButton>
                 <AutoSuggestBox
                     x:Name="TitleBarSearchBox"
                     Width="380"

@@ -76,10 +76,37 @@ internal static class SteamService
         if (ids.Count == 0)
             return new Dictionary<uint, KeyValue>();
 
-        // Own connection + callback pump on a worker thread. The shared SteamService
-        // client is not safe to use from the WinUI dispatcher.
-        return await Task.Run(() => FetchAppInfosIsolatedAsync(ids, cancellationToken), cancellationToken)
-            .ConfigureAwait(false);
+        Exception? lastError = null;
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                // Own connection + callback pump on a worker thread. The shared SteamService
+                // client is not safe to use from the WinUI dispatcher.
+                return await Task.Run(() => FetchAppInfosIsolatedAsync(ids, cancellationToken), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (attempt < 3 && IsTransientSteamFailure(ex))
+            {
+                lastError = ex;
+                AppLog.Write($"[DepotMetadata] Steam PICS retry {attempt}: {ex.Message}");
+                await Task.Delay(500 * attempt, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("Steam PICS failed.");
+    }
+
+    private static bool IsTransientSteamFailure(Exception ex)
+    {
+        string message = ex.Message;
+        return message.Contains("TryAnotherCM", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Disconnected", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Busy", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Timeout", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("ServiceUnavailable", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("RateLimit", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("NoConnection", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<IReadOnlyDictionary<uint, KeyValue>> FetchAppInfosIsolatedAsync(

@@ -13,7 +13,7 @@ Windows desktop app for importing Steam depot manifests, downloading game files 
 - **CDN region** — choose a Steam content cell (or Auto) in Settings
 - **Install path** — set a default download/install root
 - **Play** — launch a saved executable with the game folder as working directory
-- **Context menu** — open install folder, patch with Goldberg, uninstall
+- **Context menu** — open install folder, uninstall
 - **Theme** — light / dark
 
 ## Technologies
@@ -53,16 +53,20 @@ Or:
 dotnet publish EZManifest\EZManifest.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false -p:WindowsAppSDKSelfContained=true -p:WindowsPackageType=None -o publish
 ```
 
-Output: `publish\EZManifest.exe` (self-contained single-file).
+Output:
+- `publish\EZManifest.exe` (self-contained single-file)
+- `publish\SteamAutoCrack.CLI\` (downloaded from the v3.5.0.7 release)
+- `installer\EZManifest-Setup-1.2.0.exe` (Inno Setup, if ISCC is installed)
 
-Runtime data is created next to the exe when needed:
+The installer does not need admin. It defaults to `%LocalAppData%\Programs\EZManifest` (you can pick another folder) and leaves `%LocalAppData%\EZManifest` alone on uninstall.
+
+Runtime data lives in `%LocalAppData%\EZManifest`:
 
 | Path | Purpose |
 |------|---------|
 | `settings.json` | Download path + CDN cell |
 | `items.json` | Library entries |
 | `Manifests\` | Extracted manifest archives |
-| `Goldberg\` | Cached Goldberg emulator files (on first patch) |
 
 ## Usage
 
@@ -80,6 +84,7 @@ Depot list is driven by **on-disk `.manifest` files** and keys from `addappid(..
 EZManifest/
   EZManifest.slnx
   publish.bat
+  installer.iss
   EZManifest/
     EZManifest.csproj
     Views/Pages/     Library, Downloads, Settings

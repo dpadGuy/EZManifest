@@ -14,6 +14,7 @@ public sealed partial class SettingsPage : Page
     private readonly AppMessageBoxService _messageBoxService;
     private readonly WindowProvider _windowProvider;
     private bool _suppressCdnSave;
+    private bool _suppressNotifySave = true;
 
     public SettingsViewModel ViewModel { get; }
 
@@ -45,11 +46,15 @@ public sealed partial class SettingsPage : Page
             CdnRegionComboBox.ItemsSource = SteamCdnRegions.All;
             CdnRegionComboBox.SelectedItem = SteamCdnRegions.Find(settings.CdnCellId);
             _suppressCdnSave = false;
+
+            NotifyOnInstallToggle.IsOn = settings.NotifyOnInstallComplete;
+            _suppressNotifySave = false;
         }
         catch (Exception ex)
         {
             AppLog.Write(ex, "Error loading settings");
             _suppressCdnSave = false;
+            _suppressNotifySave = false;
         }
     }
 
@@ -151,6 +156,23 @@ public sealed partial class SettingsPage : Page
         catch (Exception ex)
         {
             AppLog.Write(ex, "Failed to save CDN region");
+        }
+    }
+
+    private async void NotifyOnInstallToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressNotifySave)
+            return;
+
+        bool enabled = NotifyOnInstallToggle.IsOn;
+        try
+        {
+            await _settingsService.UpdateAsync(settings => settings.NotifyOnInstallComplete = enabled);
+            AppLog.Write($"[Settings] Install notifications {(enabled ? "enabled" : "disabled")}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save notification setting");
         }
     }
 }

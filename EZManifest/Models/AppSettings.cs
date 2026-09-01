@@ -19,4 +19,10 @@ public sealed class AppSettings
 
     /// <summary>When true, library shows only installed/downloaded games.</summary>
     public bool ShowDownloadedOnly { get; set; }
+
+    /// <summary>When true, library uses the Steam-style list instead of cover cards.</summary>
+    public bool UseLibraryListView { get; set; } = true;
+
+    /// <summary>When true, show a Windows notification after a game finishes installing.</summary>
+    public bool NotifyOnInstallComplete { get; set; } = true;
 }

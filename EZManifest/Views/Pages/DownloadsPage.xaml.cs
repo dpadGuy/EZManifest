@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using EZManifest.Models;
 using EZManifest.Services;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -30,6 +31,7 @@ public sealed partial class DownloadsPage : Page
     private readonly AppSettingsService _settingsService;
     private readonly WindowProvider _windowProvider;
     private readonly PostDownloadService _postDownloadService;
+    private readonly WindowsToastService _windowsToast;
 
     private string _finalPath = string.Empty;
     private string _appId = string.Empty;
@@ -42,6 +44,7 @@ public sealed partial class DownloadsPage : Page
     private bool _preserveLibraryOnCancel;
     private bool _wasInstalledBeforeDownload;
     private string _installPathBeforeDownload = string.Empty;
+    private DispatcherQueueTimer? _elapsedTimer;
 
     public ObservableCollection<DownloadItem> Downloads { get; } = new();
 
@@ -57,7 +60,8 @@ public sealed partial class DownloadsPage : Page
         AppMessageBoxService messageBoxService,
         AppSettingsService settingsService,
         WindowProvider windowProvider,
-        PostDownloadService postDownloadService)
+        PostDownloadService postDownloadService,
+        WindowsToastService windowsToast)
     {
         _notifications = notifications;
         _manifestParser = manifestParser;
@@ -71,6 +75,7 @@ public sealed partial class DownloadsPage : Page
         _settingsService = settingsService;
         _windowProvider = windowProvider;
         _postDownloadService = postDownloadService;
+        _windowsToast = windowsToast;
 
         InitializeComponent();
         Downloads.CollectionChanged += (_, _) => UpdateEmptyState();
@@ -377,7 +382,7 @@ public sealed partial class DownloadsPage : Page
         if (IsAppCurrentlyDownloading(archive.AppId))
             throw new InvalidOperationException($"App {archive.AppId} is already downloading.");
 
-        await _steamMetadata.DownloadArtworkAsync(archive.AppId, archive.LogoPath, archive.CoverArtPath);
+        await _steamMetadata.DownloadArtworkAsync(archive.AppId, archive.LogoPath, archive.CoverArtPath, archive.HeroPath, archive.IconPath);
         string gameName = await _steamMetadata.GetGameNameAsync(archive.AppId);
 
         await _gameLibrary.UpsertAsync(new GameEntry
@@ -607,7 +612,7 @@ public sealed partial class DownloadsPage : Page
             return;
         }
 
-        await _steamMetadata.DownloadArtworkAsync(_appId, archive.LogoPath, archive.CoverArtPath);
+        await _steamMetadata.DownloadArtworkAsync(_appId, archive.LogoPath, archive.CoverArtPath, archive.HeroPath, archive.IconPath);
 
         // If the title was already in the library, keep it there on cancel / depot dismiss.
         var existing = (await _gameLibrary.LoadAsync())
@@ -644,6 +649,20 @@ public sealed partial class DownloadsPage : Page
         await ManifestDepotIdChoiceAsync(
             archive.LuaFilePath,
             removeFromLibraryOnCancel: !alreadyInLibrary);
+    }
+
+    public bool HasActiveDownloads => Downloads.Count > 0;
+
+    public int ActiveDownloadCount => Downloads.Count;
+
+    public async Task CancelAllDownloadsAndWaitAsync()
+    {
+        foreach (var item in Downloads.ToList())
+            item.CancelCommand?.Execute(null);
+
+        var started = Stopwatch.StartNew();
+        while (Downloads.Count > 0 && started.Elapsed < TimeSpan.FromSeconds(20))
+            await Task.Delay(100);
     }
 
     private bool IsAppCurrentlyDownloading(string appId) =>
@@ -719,18 +738,34 @@ public sealed partial class DownloadsPage : Page
         }
 
         var displayRows = BuildDepotDisplayRows(availableItems, metadata);
-        var gameRows = displayRows.Where(row => !row.Display.IsLanguage && !row.Display.IsDlc).ToList();
-        var dlcRows = displayRows
-            .Where(row => row.Display.IsDlc)
-            .OrderBy(row => DlcGroupName(row.Display), StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => DlcLanguageRank(row.Display))
-            .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var languageRows = displayRows
-            .Where(row => row.Display.IsLanguage && !row.Display.IsDlc)
-            .OrderBy(row => IsEnglishLanguage(row.Display.LanguageCode) ? 0 : 1)
-            .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var gameRows = SteamDepotPlatformFilter.PreferHostArch(
+            displayRows
+                .Where(row =>
+                    !row.Display.IsLanguage
+                    && !row.Display.IsDlc
+                    && !row.Display.IsShared)
+                .ToList());
+        var dlcRows = SteamDepotPlatformFilter.PreferHostArch(
+            displayRows
+                .Where(row => row.Display.IsDlc)
+                .OrderBy(row => DlcGroupName(row.Display), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(row => DlcLanguageRank(row.Display))
+                .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
+                .ToList());
+        var languageRows = SteamDepotPlatformFilter.PreferHostArch(
+            displayRows
+                .Where(row => row.Display.IsLanguage && !row.Display.IsDlc)
+                .OrderBy(row => IsEnglishLanguage(row.Display.LanguageCode) ? 0 : 1)
+                .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
+                .ToList());
+
+        // Some titles (MGSV) ship the game itself as language depots. Those belong
+        // in this step — not an empty game list plus an optional language dialog.
+        if (gameRows.Count == 0 && languageRows.Count > 0)
+        {
+            gameRows = RelabelLanguageAsGame(languageRows);
+            languageRows = [];
+        }
 
         var executePostDownloadCheck = new CheckBox
         {
@@ -747,32 +782,12 @@ public sealed partial class DownloadsPage : Page
             VerticalContentAlignment = VerticalAlignment.Center
         };
 
-        var appIdRow = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 12,
-            Margin = new Thickness(0, 0, 0, 4),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        appIdRow.Children.Add(new TextBlock
-        {
-            Text = $"App ID {_appId}",
-            Opacity = 0.7,
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        appIdRow.Children.Add(new HyperlinkButton
-        {
-            Content = "SteamDB depots",
-            NavigateUri = new Uri($"https://steamdb.info/app/{_appId}/depots/"),
-            Padding = new Thickness(0),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        appIdRow.Children.Add(executePostDownloadCheck);
-
         int windowsSelected = gameRows.Count(row => row.Display.AutoSelected);
         string gameHint = windowsSelected > 0
-            ? $"Windows depots preselected ({windowsSelected}). You can change this."
-            : "No Windows depot match — all available depots are shown for you to choose.";
+            ? $"Windows game files Steam would install ({windowsSelected}). You can change this."
+            : metadata.Count == 0
+                ? "Steam depot info unavailable. Select depots manually."
+                : "No Windows depot match — select the game files you want.";
 
         var gamePick = await ShowDepotRowsDialogAsync(
             "Select game files",
@@ -780,7 +795,7 @@ public sealed partial class DownloadsPage : Page
             gameRows,
             NextOrDownload(dlcRows.Count > 0 || languageRows.Count > 0),
             "Cancel",
-            appIdRow);
+            CreateDepotDialogHeader(executePostDownloadCheck));
 
         if (gamePick.Result != ContentDialogResult.Primary)
         {
@@ -811,7 +826,7 @@ public sealed partial class DownloadsPage : Page
                 dlcRows,
                 NextOrDownload(languageRows.Count > 0),
                 "Skip",
-                headerExtra: null,
+                CreateDepotDialogHeader(),
                 typeHeader: "Name");
             if (dlcPick.Result == ContentDialogResult.Primary)
                 selectedItems.AddRange(dlcPick.Selected);
@@ -825,7 +840,7 @@ public sealed partial class DownloadsPage : Page
                 languageRows,
                 "Download Selected",
                 "Skip",
-                headerExtra: null);
+                CreateDepotDialogHeader());
             if (languagePick.Result == ContentDialogResult.Primary)
                 selectedItems.AddRange(languagePick.Selected);
         }
@@ -848,6 +863,56 @@ public sealed partial class DownloadsPage : Page
 
     private static string NextOrDownload(bool hasMore) =>
         hasMore ? "Next" : "Download Selected";
+
+    private static List<(DepotInfo Depot, DepotDisplayInfo Display)> RelabelLanguageAsGame(
+        IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display)> languageRows)
+    {
+        var result = languageRows
+            .Select(row =>
+            {
+                string? language = FormatSteamLanguage(row.Display.LanguageCode);
+                return (Depot: row.Depot, Display: row.Display with
+                {
+                    TypeLabel = string.IsNullOrWhiteSpace(language) ? "Game" : $"Game — {language}"
+                });
+            })
+            .ToList();
+
+        if (result.Count > 0 && !result.Any(row => row.Display.AutoSelected))
+        {
+            var first = result[0];
+            result[0] = (Depot: first.Depot, Display: first.Display with { AutoSelected = first.Display.HasLocalManifest });
+        }
+
+        return result;
+    }
+
+    private FrameworkElement CreateDepotDialogHeader(UIElement? extra = null)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            Margin = new Thickness(0, 0, 0, 4),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        row.Children.Add(new TextBlock
+        {
+            Text = $"App ID {_appId}",
+            Opacity = 0.7,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        row.Children.Add(new HyperlinkButton
+        {
+            Content = "SteamDB depots",
+            NavigateUri = new Uri($"https://steamdb.info/app/{_appId}/depots/"),
+            Padding = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        if (extra is not null)
+            row.Children.Add(extra);
+        return row;
+    }
 
     private async Task<(ContentDialogResult Result, List<DepotInfo> Selected)> ShowDepotRowsDialogAsync(
         string title,
@@ -1155,7 +1220,7 @@ public sealed partial class DownloadsPage : Page
             // Prefer download size; fall back to full size when Steam only exposes one value.
             download ??= size;
 
-            string languageCode = meta?.Language ?? InferLanguageCodeFromName(meta?.Name) ?? string.Empty;
+            string languageCode = FirstLanguageCode(meta?.Language, meta?.Name, meta?.Configuration) ?? string.Empty;
             staged.Add((depot, new DepotDisplayInfo
             {
                 DepotId = depot.DepotId,
@@ -1167,8 +1232,10 @@ public sealed partial class DownloadsPage : Page
                 DownloadBytes = download,
                 HasLocalManifest = hasManifest,
                 IsDlc = meta?.IsDlc == true,
+                IsShared = meta?.IsShared == true,
                 IsLanguage = !string.IsNullOrWhiteSpace(languageCode),
-                LanguageCode = languageCode
+                LanguageCode = languageCode,
+                OsArch = meta?.OsArch
             }, meta));
         }
 
@@ -1184,6 +1251,7 @@ public sealed partial class DownloadsPage : Page
         {
             AppLog.Write(
                 $"[Downloads] depot {row.Depot.DepotId} os={row.Meta?.OsList ?? "(none)"} " +
+                $"lang={row.Display.LanguageCode} dlc={row.Display.IsDlc} " +
                 $"type={row.Display.TypeLabel} selected={windowsIds.Contains(row.Depot.DepotId)}");
         }
 
@@ -1206,8 +1274,10 @@ public sealed partial class DownloadsPage : Page
                     DownloadBytes = row.Display.DownloadBytes,
                     HasLocalManifest = row.Display.HasLocalManifest,
                     IsDlc = row.Display.IsDlc,
+                    IsShared = row.Display.IsShared,
                     IsLanguage = row.Display.IsLanguage,
                     LanguageCode = row.Display.LanguageCode,
+                    OsArch = row.Display.OsArch,
                     AutoSelected = row.Display.HasLocalManifest && (
                         row.Display.IsDlc
                         || (row.Display.IsLanguage && isEnglish)
@@ -1220,7 +1290,7 @@ public sealed partial class DownloadsPage : Page
 
     private static string FormatDepotTypeLabel(DepotMetadata? meta, string depotId, string gameName)
     {
-        string? language = FormatSteamLanguage(meta?.Language ?? InferLanguageCodeFromName(meta?.Name));
+        string? language = FormatSteamLanguage(FirstLanguageCode(meta?.Language, meta?.Name));
 
         if (meta?.IsDlc == true)
         {
@@ -1240,7 +1310,14 @@ public sealed partial class DownloadsPage : Page
 
     private static string FormatDlcName(DepotMetadata meta, string depotId, string gameName)
     {
-        string name = meta.Name?.Trim() ?? string.Empty;
+        string original = meta.Name?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(meta.DlcAppId)
+            && original.Equals($"DLC {meta.DlcAppId}", StringComparison.OrdinalIgnoreCase))
+        {
+            original = string.Empty;
+        }
+
+        string name = original;
         if (!string.IsNullOrWhiteSpace(name))
         {
             int paren = name.IndexOf(" (", StringComparison.Ordinal);
@@ -1257,17 +1334,31 @@ public sealed partial class DownloadsPage : Page
             if (!string.IsNullOrWhiteSpace(gameName)
                 && name.StartsWith(gameName, StringComparison.OrdinalIgnoreCase))
             {
-                name = name[gameName.Length..].TrimStart(' ', '-', ':');
+                string stripped = name[gameName.Length..].TrimStart(' ', '-', ':');
+                name = string.IsNullOrWhiteSpace(stripped) ? name : stripped;
             }
             else
             {
                 int dash = name.IndexOf(" - ", StringComparison.Ordinal);
                 if (dash >= 0)
-                    name = name[(dash + 3)..].Trim();
+                {
+                    string afterDash = name[(dash + 3)..].Trim();
+                    if (!string.IsNullOrWhiteSpace(afterDash))
+                        name = afterDash;
+                }
             }
 
-            if (!string.IsNullOrWhiteSpace(name))
+            if (!string.IsNullOrWhiteSpace(name)
+                && !name.Equals(gameName, StringComparison.OrdinalIgnoreCase))
+            {
                 return name;
+            }
+
+            if (!string.IsNullOrWhiteSpace(original)
+                && !original.Equals(gameName, StringComparison.OrdinalIgnoreCase))
+            {
+                return original;
+            }
         }
 
         return string.IsNullOrWhiteSpace(meta.DlcAppId)
@@ -1275,27 +1366,20 @@ public sealed partial class DownloadsPage : Page
             : $"DLC {meta.DlcAppId}";
     }
 
-    private static string? InferLanguageCodeFromName(string? name)
+    private static string? FirstLanguageCode(params string?[] values)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            return null;
+        string? steamLanguage = values.Length > 0 ? values[0] : null;
+        if (!string.IsNullOrWhiteSpace(steamLanguage))
+            return steamLanguage.Trim();
 
-        Match match = Regex.Match(name, @"-\s*([a-z]{2})(?:_([A-Za-z]{2}))?\s*$", RegexOptions.IgnoreCase);
-        if (!match.Success)
-            return null;
-
-        string language = match.Groups[1].Value.ToLowerInvariant();
-        string region = match.Groups[2].Value.ToLowerInvariant();
-        return (language, region) switch
+        for (int i = 1; i < values.Length; i++)
         {
-            ("pt", "br") => "brazilian",
-            ("es", "mx") or ("es", "419") => "latam",
-            ("zh", "cn") or ("zh", "hans") => "schinese",
-            ("zh", "tw") or ("zh", "hk") or ("zh", "hant") => "tchinese",
-            ("ko", _) => "koreana",
-            ("en", _) => "english",
-            _ => language
-        };
+            string? inferred = SteamLanguageNames.InferFromName(values[i]);
+            if (!string.IsNullOrWhiteSpace(inferred))
+                return inferred;
+        }
+
+        return null;
     }
 
     private static bool IsEnglishLanguage(string? code)
@@ -1406,6 +1490,80 @@ public sealed partial class DownloadsPage : Page
         }
     }
 
+    private void EnsureElapsedTimer()
+    {
+        if (_elapsedTimer is null)
+        {
+            _elapsedTimer = DispatcherQueue.CreateTimer();
+            _elapsedTimer.Interval = TimeSpan.FromSeconds(1);
+            _elapsedTimer.Tick += (_, _) =>
+            {
+                foreach (var item in Downloads)
+                    item.RefreshElapsed();
+
+                if (Downloads.Count == 0)
+                    _elapsedTimer.Stop();
+            };
+        }
+
+        if (!_elapsedTimer.IsRunning)
+            _elapsedTimer.Start();
+    }
+
+    private async Task<bool> HasEnoughDiskSpaceAsync(IReadOnlyList<DepotInfo> selectedDepots)
+    {
+        string installDirectory = await _installPathService
+            .GetInstallDirectoryAsync(_currentGameName, _appId);
+        long required = await EstimateSelectedInstallBytesAsync(selectedDepots);
+        if (required <= 0)
+            return true;
+
+        if (!DriveSpace.TryGetAvailableBytes(installDirectory, out long available))
+            return true;
+
+        long needed = required + DriveSpace.SafetyReserveBytes;
+        if (available >= needed)
+            return true;
+
+        string drive = DriveSpace.DriveName(installDirectory);
+        AppLog.Write(
+            $"[Downloads] Blocked install '{_currentGameName}' appId={_appId}: " +
+            $"need={needed} free={available} drive={drive}");
+        await _messageBoxService.ShowAsync(
+            "Not enough space",
+            $"\"{_currentGameName}\" needs {DriveSpace.FormatBytes(required)} to install on {drive}, " +
+            $"but only {DriveSpace.FormatBytes(available)} is free.\n\n" +
+            "Free up space or change the download folder in Settings, then try again.");
+        return false;
+    }
+
+    private async Task<long> EstimateSelectedInstallBytesAsync(IReadOnlyList<DepotInfo> selectedDepots)
+    {
+        IReadOnlyDictionary<string, DepotMetadata> metadata = new Dictionary<string, DepotMetadata>();
+        if (!string.IsNullOrWhiteSpace(_appId))
+        {
+            metadata = await _depotMetadata
+                .GetDepotMetadataAsync(_appId, selectedDepots.Select(depot => depot.DepotId))
+                .ConfigureAwait(false);
+        }
+
+        long total = 0;
+        foreach (var depot in selectedDepots)
+        {
+            long? size = null;
+            if (metadata.TryGetValue(depot.DepotId, out var meta))
+                size = meta.SizeBytes;
+
+            if (size is not > 0)
+                size = TryReadLocalManifestSizes(depot).Size;
+
+            if (size is > 0)
+                total += size.Value;
+        }
+
+        return total;
+    }
+
     private async Task StartDownloadProcessAsync(List<DepotInfo> selectedDepots, bool executePostDownload)
     {
         if (IsAppCurrentlyDownloading(_appId))
@@ -1415,6 +1573,9 @@ public sealed partial class DownloadsPage : Page
                 $"\"{_currentGameName}\" is currently in the download process and cannot be added again.");
             return;
         }
+
+        if (!await HasEnoughDiskSpaceAsync(selectedDepots))
+            return;
 
         var cancellation = new CancellationTokenSource();
         var pause = new DownloadPauseState();
@@ -1454,12 +1615,14 @@ public sealed partial class DownloadsPage : Page
 
             if (pause.Toggle())
             {
+                downloadItem.PauseElapsed();
                 downloadItem.Status = "Paused";
                 downloadItem.PauseButtonText = "Resume";
                 AppLog.Write($"[Downloads] Paused '{_currentGameName}'");
             }
             else
             {
+                downloadItem.ResumeElapsed();
                 downloadItem.Status = "Downloading game files...";
                 downloadItem.PauseButtonText = "Pause";
                 AppLog.Write($"[Downloads] Resumed '{_currentGameName}'");
@@ -1467,6 +1630,8 @@ public sealed partial class DownloadsPage : Page
         });
 
         Downloads.Add(downloadItem);
+        downloadItem.StartElapsed();
+        EnsureElapsedTimer();
         bool preserveLibraryOnCancel = _preserveLibraryOnCancel;
         bool wasInstalledBeforeDownload = _wasInstalledBeforeDownload;
         string installPathBeforeDownload = _installPathBeforeDownload;
@@ -1588,6 +1753,7 @@ public sealed partial class DownloadsPage : Page
                     IsInstalled = true
                 });
                 RequestLibraryRefresh();
+                await _windowsToast.NotifyInstallCompleteAsync(cancelledGameName);
 
                 if (executePostDownload)
                 {

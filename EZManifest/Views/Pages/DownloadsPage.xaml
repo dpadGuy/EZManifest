@@ -103,14 +103,20 @@
                                     Minimum="0"
                                     Value="{x:Bind ProgressValue, Mode=OneWay}" />
 
-                                <StackPanel
-                                    Grid.Row="2"
-                                    HorizontalAlignment="Right"
-                                    Orientation="Horizontal"
-                                    Spacing="8">
-                                    <Button Content="Cancel" Command="{x:Bind CancelCommand, Mode=OneWay}" />
-                                    <Button Content="{x:Bind PauseButtonText, Mode=OneWay}" Command="{x:Bind PauseCommand, Mode=OneWay}" />
-                                </StackPanel>
+                                <Grid Grid.Row="2">
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        FontSize="12"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="{x:Bind ElapsedText, Mode=OneWay}" />
+                                    <StackPanel
+                                        HorizontalAlignment="Right"
+                                        Orientation="Horizontal"
+                                        Spacing="8">
+                                        <Button Content="Cancel" Command="{x:Bind CancelCommand, Mode=OneWay}" />
+                                        <Button Content="{x:Bind PauseButtonText, Mode=OneWay}" Command="{x:Bind PauseCommand, Mode=OneWay}" />
+                                    </StackPanel>
+                                </Grid>
                             </Grid>
                         </Border>
                     </DataTemplate>

@@ -28,19 +28,42 @@ public sealed class ManifestArchiveService
     }
 
     /// <summary>Finds an extracted manifest folder that contains <c>{appId}.lua</c>.</summary>
-    public static string? FindExtractionDirectory(string appId)
+    public static string? FindExtractionDirectory(string appId) =>
+        FindExtractionDirectories(appId).FirstOrDefault();
+
+    /// <summary>All extracted folders for this app (re-imports can leave more than one).</summary>
+    public static IReadOnlyList<string> FindExtractionDirectories(string appId)
     {
         if (string.IsNullOrWhiteSpace(appId) || !Directory.Exists(AppPaths.ManifestsDirectory))
-            return null;
+            return Array.Empty<string>();
 
         string luaName = $"{appId}.lua";
-        foreach (string dir in Directory.EnumerateDirectories(AppPaths.ManifestsDirectory))
+        string manifestsRoot = Path.GetFullPath(AppPaths.ManifestsDirectory);
+        var matches = new List<string>();
+        foreach (string dir in Directory.EnumerateDirectories(manifestsRoot))
         {
             if (File.Exists(Path.Combine(dir, luaName)))
-                return dir;
+                matches.Add(dir);
         }
 
-        return null;
+        return matches;
+    }
+
+    public static void DeleteExtractionDirectories(string appId)
+    {
+        foreach (string dir in FindExtractionDirectories(appId))
+        {
+            try
+            {
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+                AppLog.Write($"[ManifestArchive] Removed manifest folder '{dir}' for appId={appId}");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[ManifestArchive] Could not remove '{dir}' for appId={appId}: {ex.Message}");
+            }
+        }
     }
 
     public static string? FindLuaPath(string appId)
@@ -148,7 +171,9 @@ public sealed class ManifestArchiveService
             LuaFilePath = luaFile,
             AppId = Path.GetFileNameWithoutExtension(luaFile),
             LogoPath = Path.Combine(assetsDirectory, "GameLogo.png"),
-            CoverArtPath = Path.Combine(assetsDirectory, "VerticalCoverArt.jpg")
+            CoverArtPath = Path.Combine(assetsDirectory, "VerticalCoverArt.jpg"),
+            HeroPath = Path.Combine(assetsDirectory, "LibraryHero.jpg"),
+            IconPath = Path.Combine(assetsDirectory, "GameIcon.jpg")
         };
     }
 

@@ -27,6 +27,8 @@ public sealed partial class MainWindow : Window
     private readonly GameLibraryService _gameLibrary;
     private bool _startupInstallPromptShown;
     private bool _centeredOnStartup;
+    private bool _allowClose;
+    private bool _closePromptOpen;
 
     public MainWindow(
         IServiceProvider services,
@@ -48,6 +50,8 @@ public sealed partial class MainWindow : Window
         _gameLibrary = gameLibrary;
 
         InitializeComponent();
+
+        AppWindow.Closing += OnAppWindowClosing;
 
         ApplyMinimumWindowSize();
 
@@ -104,13 +108,46 @@ public sealed partial class MainWindow : Window
             ShowDownloadedOnlyCheckBox.Checked += ShowDownloadedOnlyCheckBox_Changed;
             ShowDownloadedOnlyCheckBox.Unchecked += ShowDownloadedOnlyCheckBox_Changed;
 
+            ApplyLibraryViewButtons(settings.UseLibraryListView);
             if (ContentFrame.Content is LibraryPage library)
+            {
                 library.SetShowDownloadedOnly(settings.ShowDownloadedOnly);
+                library.SetLibraryListView(settings.UseLibraryListView);
+            }
         }
         catch (Exception ex)
         {
             AppLog.Write(ex, "Failed to load library filter setting");
         }
+    }
+
+    private async void LibraryListViewButton_Click(object sender, RoutedEventArgs e) =>
+        await SetLibraryListViewAsync(true);
+
+    private async void LibraryGridViewButton_Click(object sender, RoutedEventArgs e) =>
+        await SetLibraryListViewAsync(false);
+
+    private async Task SetLibraryListViewAsync(bool useListView)
+    {
+        ApplyLibraryViewButtons(useListView);
+
+        try
+        {
+            await _settingsService.UpdateAsync(settings => settings.UseLibraryListView = useListView);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save library view setting");
+        }
+
+        if (ContentFrame.Content is LibraryPage library)
+            library.SetLibraryListView(useListView);
+    }
+
+    private void ApplyLibraryViewButtons(bool useListView)
+    {
+        LibraryListViewButton.IsChecked = useListView;
+        LibraryGridViewButton.IsChecked = !useListView;
     }
 
     private async void ShowDownloadedOnlyCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -128,6 +165,51 @@ public sealed partial class MainWindow : Window
 
         if (ContentFrame.Content is LibraryPage library)
             library.SetShowDownloadedOnly(showDownloadedOnly);
+    }
+
+    private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_allowClose)
+            return;
+
+        var downloads = _services.GetRequiredService<DownloadsPage>();
+        if (!downloads.HasActiveDownloads)
+            return;
+
+        args.Cancel = true;
+        if (_closePromptOpen)
+            return;
+
+        _closePromptOpen = true;
+        try
+        {
+            int count = downloads.ActiveDownloadCount;
+            string body = count == 1
+                ? "Closing EZManifest will cancel that install and remove the partial files so you don't end up with a broken game.\n\nExit and cancel the download?"
+                : $"Closing EZManifest will cancel those installs and remove the partial files so you don't end up with broken games.\n\nExit and cancel the downloads?";
+
+            var result = await _messageBoxService.ShowAsync(
+                "Downloads in progress",
+                body,
+                "Exit and cancel",
+                "Stay");
+
+            if (result != ContentDialogResult.Primary)
+                return;
+
+            AppLog.Write($"[Window] Closing with {count} active download(s) — cancelling");
+            await downloads.CancelAllDownloadsAndWaitAsync();
+            _allowClose = true;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Close-while-downloading prompt failed");
+        }
+        finally
+        {
+            _closePromptOpen = false;
+        }
     }
 
     private void HandleRefresh()
@@ -302,6 +384,7 @@ public sealed partial class MainWindow : Window
         if (page is LibraryPage library)
         {
             library.SetShowDownloadedOnly(ShowDownloadedOnlyCheckBox.IsChecked == true);
+            library.SetLibraryListView(LibraryListViewButton.IsChecked == true);
             library.ApplySearchFilter(TitleBarSearchBox.Text);
         }
     }

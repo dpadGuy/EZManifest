@@ -80,7 +80,7 @@ public class DownloadItem : INotifyPropertyChanged
         }
     }
 
-    // CDN payload bytes only — used for Mbps, not disk write size.
+    // CDN payload bytes only — used for speed, not disk write size.
     private long _networkBytesReceived;
     public long NetworkBytesReceived
     {
@@ -119,6 +119,27 @@ public class DownloadItem : INotifyPropertyChanged
         get => _pauseButtonText;
         set { _pauseButtonText = value; OnPropertyChanged(nameof(PauseButtonText)); }
     }
+
+    private readonly Stopwatch _elapsed = new();
+
+    public string ElapsedText
+    {
+        get
+        {
+            TimeSpan elapsed = _elapsed.Elapsed;
+            return elapsed.TotalHours >= 1
+                ? $"Elapsed: {elapsed.Hours}h {elapsed.Minutes:00}m {elapsed.Seconds:00}s"
+                : $"Elapsed: {elapsed.Minutes}m {elapsed.Seconds:00}s";
+        }
+    }
+
+    public void StartElapsed() => _elapsed.Start();
+
+    public void PauseElapsed() => _elapsed.Stop();
+
+    public void ResumeElapsed() => _elapsed.Start();
+
+    public void RefreshElapsed() => OnPropertyChanged(nameof(ElapsedText));
 
     public ICommand? CancelCommand { get; set; }
     public ICommand? PauseCommand { get; set; }
@@ -162,14 +183,18 @@ public class DownloadItem : INotifyPropertyChanged
         if (bytesPerSecond < 32)
             return string.Empty;
 
-        double bitsPerSecond = bytesPerSecond * 8.0;
-        if (bitsPerSecond >= 1_000_000_000)
-            return $"{bitsPerSecond / 1_000_000_000:0.##} Gbps";
-        if (bitsPerSecond >= 1_000_000)
-            return $"{bitsPerSecond / 1_000_000:0.##} Mbps";
-        if (bitsPerSecond >= 1_000)
-            return $"{bitsPerSecond / 1_000:0.##} Kbps";
-        return $"{bitsPerSecond:0} bps";
+        string[] units = { "B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
+        double value = bytesPerSecond;
+        int unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024;
+            unitIndex++;
+        }
+
+        return unitIndex == 0
+            ? $"{value:0} {units[unitIndex]}"
+            : $"{value:0.##} {units[unitIndex]}";
     }
 
     private static string FormatBytes(long bytes)

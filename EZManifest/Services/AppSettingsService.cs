@@ -31,7 +31,7 @@ public sealed class AppSettingsService
 
     public async Task SaveAsync(AppSettings settings)
     {
-        Directory.CreateDirectory(AppPaths.ExeDirectory);
+        Directory.CreateDirectory(AppPaths.DataDirectory);
         await File.WriteAllTextAsync(SettingsPath, JsonSerializer.Serialize(settings, JsonOptions));
     }
 
