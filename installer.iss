@@ -16,7 +16,7 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableDirPage=no
 DisableProgramGroupPage=yes
-UsePreviousAppDir=no
+UsePreviousAppDir=yes
 OutputDir=installer
 OutputBaseFilename=EZManifest-Setup-{#MyAppVersion}
 SetupIconFile=EZManifest\Assets\EZManifestLogo.ico
@@ -32,7 +32,9 @@ MinVersion=10.0.17763
 CloseApplications=force
 RestartApplications=no
 DisableFinishedPage=yes
-; App files default to %LocalAppData%\Programs\EZManifest. Library data stays in %LocalAppData%\EZManifest.
+; First install defaults to %LocalAppData%\Programs\EZManifest. Later Inno runs
+; reuse that previous folder. The in-app updater passes /DIR= for the running exe.
+; Library data stays in %LocalAppData%\EZManifest.
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
