@@ -56,9 +56,18 @@ public sealed class AppUpdateService
             return null;
 
         if (root["prerelease"]?.GetValue<bool>() == true)
+        {
+            AppLog.Write("[Update] Latest GitHub release is marked pre-release; skipping");
             return null;
+        }
 
         string? tag = root["tag_name"]?.ToString();
+        if (IsPreReleaseTag(tag))
+        {
+            AppLog.Write($"[Update] Ignoring pre-release tag '{tag}'");
+            return null;
+        }
+
         if (!TryParseVersion(tag, out Version remote))
         {
             AppLog.Write($"[Update] Could not parse release tag '{tag}'");
@@ -459,9 +468,8 @@ public sealed class AppUpdateService
         && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
         && name.Contains("Setup", StringComparison.OrdinalIgnoreCase);
 
-    private static bool TryParseVersion(string? tag, out Version version)
+    private static bool IsPreReleaseTag(string? tag)
     {
-        version = new Version(0, 0, 0, 0);
         if (string.IsNullOrWhiteSpace(tag))
             return false;
 
@@ -469,9 +477,18 @@ public sealed class AppUpdateService
         if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase))
             text = text[1..];
 
-        int dash = text.IndexOf('-');
-        if (dash >= 0)
-            text = text[..dash];
+        return text.Contains('-', StringComparison.Ordinal);
+    }
+
+    private static bool TryParseVersion(string? tag, out Version version)
+    {
+        version = new Version(0, 0, 0, 0);
+        if (string.IsNullOrWhiteSpace(tag) || IsPreReleaseTag(tag))
+            return false;
+
+        string text = tag.Trim();
+        if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+            text = text[1..];
 
         if (!Version.TryParse(text, out Version? parsed))
             return false;
