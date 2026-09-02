@@ -25,4 +25,7 @@ public sealed class AppSettings
 
     /// <summary>When true, show a Windows notification after a game finishes installing.</summary>
     public bool NotifyOnInstallComplete { get; set; } = true;
+
+    /// <summary>When true, check GitHub for a newer EZManifest installer on startup.</summary>
+    public bool CheckForUpdatesOnStartup { get; set; } = true;
 }

@@ -25,6 +25,7 @@ public sealed partial class MainWindow : Window
     private readonly WindowProvider _windowProvider;
     private readonly AppNavigationService _navigationService;
     private readonly GameLibraryService _gameLibrary;
+    private readonly AppUpdateService _updateService;
     private bool _startupInstallPromptShown;
     private bool _centeredOnStartup;
     private bool _allowClose;
@@ -38,7 +39,8 @@ public sealed partial class MainWindow : Window
         DebugLogService debugLogService,
         WindowProvider windowProvider,
         AppNavigationService navigationService,
-        GameLibraryService gameLibrary)
+        GameLibraryService gameLibrary,
+        AppUpdateService updateService)
     {
         _services = services;
         _messageBoxService = messageBoxService;
@@ -48,6 +50,7 @@ public sealed partial class MainWindow : Window
         _windowProvider = windowProvider;
         _navigationService = navigationService;
         _gameLibrary = gameLibrary;
+        _updateService = updateService;
 
         InitializeComponent();
 
@@ -89,6 +92,7 @@ public sealed partial class MainWindow : Window
                 UpdateTitleBarPassthroughRegion();
                 await LoadLibraryFilterSettingAsync();
                 await PromptForInstallLocationIfNeededAsync();
+                await CheckForAppUpdateOnStartupAsync();
                 await UpdateLibraryCountAsync();
             };
         }
@@ -295,6 +299,39 @@ public sealed partial class MainWindow : Window
             "Install location set",
             folder.Path,
             InfoBarSeverity.Success);
+    }
+
+    private async Task CheckForAppUpdateOnStartupAsync()
+    {
+        try
+        {
+            var settings = await _settingsService.LoadAsync();
+            if (!settings.CheckForUpdatesOnStartup)
+                return;
+
+            await _updateService.PromptIfAvailableAsync(silentWhenCurrent: true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "[Update] Startup check failed");
+        }
+    }
+
+    public async void CloseForUpdate()
+    {
+        _allowClose = true;
+        try
+        {
+            var downloads = _services.GetRequiredService<DownloadsPage>();
+            if (downloads.HasActiveDownloads)
+                await downloads.CancelAllDownloadsAndWaitAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "[Update] Cancel downloads before update failed");
+        }
+
+        Close();
     }
 
     private void ApplyWindowIcon()

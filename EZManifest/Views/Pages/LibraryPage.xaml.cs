@@ -48,6 +48,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
     private string _searchQuery = string.Empty;
     private bool _showDownloadedOnly;
     private bool _useListView = true;
+    private bool _suppressListSelectionChanged;
     private int _selectionAnchorIndex = -1;
     private GameEntry? _selectedGame;
     private int _heroLoadVersion;
@@ -61,6 +62,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
     private readonly Dictionary<string, DateTime> _recentLaunches = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _launchingExes = new(StringComparer.OrdinalIgnoreCase);
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _runningTimer;
+    private DownloadsPage? _downloadsPage;
+    private bool _downloadsHooked;
 
     private static readonly GameEntry EmptySelection = new();
 
@@ -70,7 +73,13 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
     public GameEntry SelectedGame => _selectedGame ?? EmptySelection;
     public string SelectedGameStatus =>
-        _selectedGame is null ? string.Empty : _selectedGame.IsInstalled ? "Installed" : "Not installed";
+        _selectedGame is null
+            ? string.Empty
+            : _selectedGame.IsInstalling
+                ? "Installing"
+                : _selectedGame.IsInstalled
+                    ? "Installed"
+                    : "Not installed";
     public Visibility HasSelectedGameVisibility =>
         _selectedGame is not null ? Visibility.Visible : Visibility.Collapsed;
     public Visibility NoSelectedGameVisibility =>
@@ -118,6 +127,9 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
     private void LibraryPage_Loaded(object sender, RoutedEventArgs e)
     {
         UpdateCoverArtHeight(LibraryScroll.ViewportWidth > 0 ? LibraryScroll.ViewportWidth : LibraryScroll.ActualWidth);
+
+        EnsureDownloadsHook();
+        SyncInstallingFlags();
 
         // Avoid the double hitch: only load on first show, or when a refresh was requested
         // while we were on another page.
@@ -264,6 +276,36 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         });
     }
 
+    private void EnsureDownloadsHook()
+    {
+        if (_downloadsHooked)
+            return;
+
+        _downloadsPage = _services.GetRequiredService<DownloadsPage>();
+        _downloadsPage.InstallingChanged += OnInstallingChanged;
+        _downloadsHooked = true;
+    }
+
+    private void OnInstallingChanged()
+    {
+        if (DispatcherQueue.HasThreadAccess)
+            SyncInstallingFlags();
+        else
+            DispatcherQueue.TryEnqueue(SyncInstallingFlags);
+    }
+
+    private void SyncInstallingFlags()
+    {
+        DownloadsPage? downloads = _downloadsPage;
+        if (downloads is null)
+            return;
+
+        foreach (GameEntry game in AppsList)
+            game.IsInstalling = downloads.IsAppInstalling(game.AppId);
+
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedGameStatus)));
+    }
+
     private Task EnsureLoadedAsync(bool force = false)
     {
         if (!force && _hasLoaded && !_refreshPending)
@@ -307,6 +349,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             ApplyFilter();
             _hasLoaded = true;
             _refreshPending = false;
+            EnsureDownloadsHook();
+            SyncInstallingFlags();
             RefreshRunningGames();
             _ = FillInstallSizesAsync(version);
             _ = FillListIconsAsync(version);
@@ -432,8 +476,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
         keep ??= FilteredApps.FirstOrDefault();
         SetSelectedGame(keep);
-        if (!ReferenceEquals(GamesList.SelectedItem, keep))
-            GamesList.SelectedItem = keep;
+        ApplyListViewSelectionFromIds(keep);
     }
 
     private async Task LoadListDetailArtworkAsync()
@@ -921,8 +964,15 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         if (width <= 0)
             return;
 
-        double tileWidth = Math.Max(1, (width - 16) / 3.0);
-        double height = Math.Clamp(Math.Round(tileWidth * 9.0 / 16.0), 120, 220);
+        const double gap = 8;
+        const int columns = 3;
+        const double maxHeight = 280;
+        double tileWidth = Math.Max(1, (width - gap * (columns - 1)) / columns);
+        double naturalHeight = tileWidth * 9.0 / 16.0;
+        double height = Math.Clamp(Math.Round(naturalHeight), 120, maxHeight);
+        double maxWidth = maxHeight * 16.0 / 9.0 * columns + gap * (columns - 1);
+        if (Math.Abs(MediaViewportHost.MaxWidth - maxWidth) > 0.5)
+            MediaViewportHost.MaxWidth = maxWidth;
         if (Math.Abs(MediaViewportHost.Height - height) > 0.5)
             MediaViewportHost.Height = height;
     }
@@ -1014,10 +1064,32 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
     private void GamesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!_useListView)
+        if (!_useListView || _suppressListSelectionChanged)
             return;
 
-        SetSelectedGame(GamesList.SelectedItem as GameEntry);
+        var selected = GamesList.SelectedItems.OfType<GameEntry>().ToList();
+        var ids = new HashSet<string>(selected.Select(game => game.AppId), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var game in AppsList)
+            SetSelected(game, ids.Contains(game.AppId));
+        foreach (var game in FilteredApps)
+            SetSelected(game, ids.Contains(game.AppId));
+
+        if (GamesList.SelectedItem is GameEntry focused)
+        {
+            SetSelectedGame(focused);
+            _selectionAnchorIndex = IndexOfFiltered(focused);
+            return;
+        }
+
+        if (selected.Count > 0)
+        {
+            SetSelectedGame(selected[^1]);
+            _selectionAnchorIndex = IndexOfFiltered(selected[^1]);
+            return;
+        }
+
+        SetSelectedGame(null);
     }
 
     private async void GamesList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
@@ -1026,8 +1098,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             return;
 
         e.Handled = true;
-        GamesList.SelectedItem = game;
-        SetSelectedGame(game);
+        SelectOnlyListGame(game);
         await RunPrimaryActionAsync(game);
     }
 
@@ -1036,9 +1107,53 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         if (GetGameEntry(e.OriginalSource) is not GameEntry game)
             return;
 
-        GamesList.SelectedItem = game;
+        if (!_selectedAppIds.Contains(game.AppId))
+            SelectOnlyListGame(game);
+
         SetSelectedGame(game);
         Card_RightTapped(e.OriginalSource, e);
+        e.Handled = true;
+    }
+
+    private void SelectOnlyListGame(GameEntry game)
+    {
+        ClearSelection();
+        SetSelected(game, true);
+        _selectionAnchorIndex = IndexOfFiltered(game);
+        SetSelectedGame(game);
+        ApplyListViewSelectionFromIds(game);
+    }
+
+    private void ApplyListViewSelectionFromIds(GameEntry? focus)
+    {
+        if (GamesList is null)
+            return;
+
+        _suppressListSelectionChanged = true;
+        try
+        {
+            GamesList.SelectedItems.Clear();
+            var chosen = FilteredApps
+                .Where(game => _selectedAppIds.Contains(game.AppId))
+                .ToList();
+
+            if (chosen.Count == 0 && focus is not null)
+            {
+                GamesList.SelectedItem = focus;
+                return;
+            }
+
+            foreach (var game in chosen)
+                GamesList.SelectedItems.Add(game);
+
+            if (focus is not null && chosen.Any(game =>
+                    string.Equals(game.AppId, focus.AppId, StringComparison.OrdinalIgnoreCase)))
+                GamesList.SelectedItem = focus;
+        }
+        finally
+        {
+            _suppressListSelectionChanged = false;
+        }
     }
 
     private async void ListDetailPrimary_Click(object sender, RoutedEventArgs e)
@@ -1173,6 +1288,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         string.Equals(left.Name, right.Name, StringComparison.Ordinal) &&
         string.Equals(left.Image, right.Image, StringComparison.Ordinal) &&
         string.Equals(left.StartLocation, right.StartLocation, StringComparison.Ordinal) &&
+        string.Equals(left.LaunchOptions, right.LaunchOptions, StringComparison.Ordinal) &&
         string.Equals(left.InstallPath, right.InstallPath, StringComparison.Ordinal) &&
         left.IsInstalled == right.IsInstalled;
 
@@ -1207,6 +1323,9 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
     private async Task RunPrimaryActionAsync(GameEntry game)
     {
+        if (game.IsInstalling)
+            return;
+
         if (!game.IsInstalled)
         {
             await InstallGameAsync(game);
@@ -1268,6 +1387,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             flyout.Items.Add(CreateMenuItem("Open install location", game, OpenInstallLocationMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Create desktop shortcut", game, CreateDesktopShortcutMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Change default executable", game, ChangeDefaultExecutableMenuItem_Click, isInstalled));
+            flyout.Items.Add(CreateMenuItem("Custom launch options", game, CustomLaunchOptionsMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Remove Steam DRM", game, RemoveSteamDrmMenuItem_Click, isInstalled));
             flyout.Items.Add(new MenuFlyoutSeparator());
             flyout.Items.Add(CreateMenuItem("Visit store page", game, VisitStorePageMenuItem_Click));
@@ -1382,6 +1502,19 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
         _selectedAppIds.Clear();
         _selectionAnchorIndex = -1;
+
+        if (_useListView && GamesList is not null)
+        {
+            _suppressListSelectionChanged = true;
+            try
+            {
+                GamesList.SelectedItems.Clear();
+            }
+            finally
+            {
+                _suppressListSelectionChanged = false;
+            }
+        }
     }
 
     private void SetSelected(GameEntry game, bool selected)
@@ -1436,6 +1569,9 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
     private async Task PlayGameAsync(GameEntry game)
     {
+        if (game.IsInstalling)
+            return;
+
         string? startLocation = game.StartLocation;
         string gameFolder = await ResolveGameFolderAsync(game);
 
@@ -1482,6 +1618,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                 {
                     FileName = exePath,
                     WorkingDirectory = workingDirectory,
+                    Arguments = game.LaunchOptions ?? string.Empty,
                     UseShellExecute = true
                 };
                 Process.Start(psi);
@@ -1742,6 +1879,48 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         return path;
     }
 
+    private async void CustomLaunchOptionsMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetGameEntry(sender) is not GameEntry game)
+            return;
+
+        var box = new TextBox
+        {
+            Text = game.LaunchOptions ?? string.Empty,
+            PlaceholderText = "-windowed -novid",
+            AcceptsReturn = false
+        };
+
+        var root = new StackPanel { Spacing = 10 };
+        root.Children.Add(new TextBlock
+        {
+            Text = "These arguments are passed to the game when you press Play.",
+            TextWrapping = TextWrapping.Wrap
+        });
+        root.Children.Add(box);
+
+        var dialog = new ContentDialog
+        {
+            Title = "Custom launch options",
+            Content = root,
+            PrimaryButtonText = "Save",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme
+        };
+        dialog.Resources["ContentDialogMinWidth"] = 420.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 560.0;
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            return;
+
+        game.LaunchOptions = box.Text?.Trim() ?? string.Empty;
+        await _gameLibrary.SaveAsync(AppsList);
+        AppLog.Write(
+            $"[Library] Launch options for '{game.Name}' appId={game.AppId}: '{game.LaunchOptions}'");
+    }
+
     private async void ChangeDefaultExecutableMenuItem_Click(object sender, RoutedEventArgs e)
     {
         if (GetGameEntry(sender) is not GameEntry game)
@@ -1834,7 +2013,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                 exePath,
                 game.Name,
                 workingDirectory,
-                game.Name);
+                game.Name,
+                game.LaunchOptions);
 
             AppLog.Write($"[Library] Desktop shortcut created for '{game.Name}' → {shortcutPath}");
         }

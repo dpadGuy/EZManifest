@@ -32,6 +32,9 @@ public sealed class GameEntry : INotifyPropertyChanged
     }
 
     public string StartLocation { get; set; } = string.Empty;
+
+    /// <summary>Command-line arguments passed when launching the game.</summary>
+    public string LaunchOptions { get; set; } = string.Empty;
     /// <summary>Install folder for this game (where files are downloaded).</summary>
     public string InstallPath { get; set; } = string.Empty;
     /// <summary>True after a download finishes; false for library-only / pending install.</summary>
@@ -76,6 +79,7 @@ public sealed class GameEntry : INotifyPropertyChanged
             _aboutTheGame = next;
             OnPropertyChanged();
             OnPropertyChanged(nameof(AboutTheGameVisibility));
+            OnPropertyChanged(nameof(AboutTheGameParagraphs));
         }
     }
 
@@ -85,6 +89,12 @@ public sealed class GameEntry : INotifyPropertyChanged
     [JsonIgnore]
     public Visibility AboutTheGameVisibility =>
         string.IsNullOrWhiteSpace(AboutTheGame) ? Visibility.Collapsed : Visibility.Visible;
+
+    [JsonIgnore]
+    public IReadOnlyList<string> AboutTheGameParagraphs =>
+        string.IsNullOrWhiteSpace(AboutTheGame)
+            ? []
+            : AboutTheGame.Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     [JsonIgnore]
     public ObservableCollection<GameMediaItem> MediaItems { get; } = new();
@@ -108,9 +118,11 @@ public sealed class GameEntry : INotifyPropertyChanged
 
     /// <summary>Play when installed; Install when the title is library-only.</summary>
     [JsonIgnore]
-    public string PrimaryActionText => IsInstalled ? "Play" : "Install";
+    public string PrimaryActionText =>
+        IsInstalling ? "Installing..." : IsInstalled ? "Play" : "Install";
 
     private bool _isRunning;
+    private bool _isInstalling;
 
     [JsonIgnore]
     public bool IsRunning
@@ -123,14 +135,30 @@ public sealed class GameEntry : INotifyPropertyChanged
 
             _isRunning = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(PlayButtonVisibility));
-            OnPropertyChanged(nameof(StopButtonVisibility));
+            NotifyActionButtonVisibility();
+        }
+    }
+
+    /// <summary>True while a download or depot picker is in progress for this title.</summary>
+    [JsonIgnore]
+    public bool IsInstalling
+    {
+        get => _isInstalling;
+        set
+        {
+            if (_isInstalling == value)
+                return;
+
+            _isInstalling = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PrimaryActionText));
+            NotifyActionButtonVisibility();
         }
     }
 
     [JsonIgnore]
     public Visibility PlayButtonVisibility =>
-        IsInstalled && !IsRunning ? Visibility.Visible : Visibility.Collapsed;
+        IsInstalled && !IsRunning && !IsInstalling ? Visibility.Visible : Visibility.Collapsed;
 
     [JsonIgnore]
     public Visibility InstalledPlayIconVisibility =>
@@ -138,11 +166,23 @@ public sealed class GameEntry : INotifyPropertyChanged
 
     [JsonIgnore]
     public Visibility StopButtonVisibility =>
-        IsRunning ? Visibility.Visible : Visibility.Collapsed;
+        IsRunning && !IsInstalling ? Visibility.Visible : Visibility.Collapsed;
 
     [JsonIgnore]
     public Visibility InstallButtonVisibility =>
-        IsInstalled ? Visibility.Collapsed : Visibility.Visible;
+        !IsInstalled && !IsInstalling ? Visibility.Visible : Visibility.Collapsed;
+
+    [JsonIgnore]
+    public Visibility InstallingButtonVisibility =>
+        IsInstalling ? Visibility.Visible : Visibility.Collapsed;
+
+    private void NotifyActionButtonVisibility()
+    {
+        OnPropertyChanged(nameof(PlayButtonVisibility));
+        OnPropertyChanged(nameof(StopButtonVisibility));
+        OnPropertyChanged(nameof(InstallButtonVisibility));
+        OnPropertyChanged(nameof(InstallingButtonVisibility));
+    }
 
     /// <summary>Larger type for short names; smaller so long titles still fit the card.</summary>
     [JsonIgnore]

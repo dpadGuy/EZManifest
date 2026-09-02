@@ -12,9 +12,11 @@ public sealed partial class SettingsPage : Page
 {
     private readonly AppSettingsService _settingsService;
     private readonly AppMessageBoxService _messageBoxService;
+    private readonly AppUpdateService _updateService;
     private readonly WindowProvider _windowProvider;
     private bool _suppressCdnSave;
     private bool _suppressNotifySave = true;
+    private bool _suppressUpdateSave = true;
 
     public SettingsViewModel ViewModel { get; }
 
@@ -22,11 +24,13 @@ public sealed partial class SettingsPage : Page
         SettingsViewModel viewModel,
         AppSettingsService settingsService,
         AppMessageBoxService messageBoxService,
+        AppUpdateService updateService,
         WindowProvider windowProvider)
     {
         ViewModel = viewModel;
         _settingsService = settingsService;
         _messageBoxService = messageBoxService;
+        _updateService = updateService;
         _windowProvider = windowProvider;
         InitializeComponent();
         _ = LoadSettingsAsync();
@@ -48,13 +52,16 @@ public sealed partial class SettingsPage : Page
             _suppressCdnSave = false;
 
             NotifyOnInstallToggle.IsOn = settings.NotifyOnInstallComplete;
+            CheckForUpdatesToggle.IsOn = settings.CheckForUpdatesOnStartup;
             _suppressNotifySave = false;
+            _suppressUpdateSave = false;
         }
         catch (Exception ex)
         {
             AppLog.Write(ex, "Error loading settings");
             _suppressCdnSave = false;
             _suppressNotifySave = false;
+            _suppressUpdateSave = false;
         }
     }
 
@@ -174,5 +181,27 @@ public sealed partial class SettingsPage : Page
         {
             AppLog.Write(ex, "Failed to save notification setting");
         }
+    }
+
+    private async void CheckForUpdatesToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressUpdateSave)
+            return;
+
+        bool enabled = CheckForUpdatesToggle.IsOn;
+        try
+        {
+            await _settingsService.UpdateAsync(settings => settings.CheckForUpdatesOnStartup = enabled);
+            AppLog.Write($"[Settings] Startup update check {(enabled ? "enabled" : "disabled")}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save update setting");
+        }
+    }
+
+    private async void CheckForUpdatesButton_Click(object sender, RoutedEventArgs e)
+    {
+        await _updateService.PromptIfAvailableAsync(silentWhenCurrent: false);
     }
 }

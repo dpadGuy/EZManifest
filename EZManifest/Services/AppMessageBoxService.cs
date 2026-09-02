@@ -18,16 +18,18 @@ public sealed class AppMessageBoxService
         string title,
         string content,
         string? primaryButtonText = null,
-        string closeButtonText = "OK")
+        string closeButtonText = "OK",
+        string? secondaryButtonText = null)
     {
-        return await ShowAsync(title, (object)content, primaryButtonText, closeButtonText);
+        return await ShowAsync(title, (object)content, primaryButtonText, closeButtonText, secondaryButtonText);
     }
 
     public async Task<ContentDialogResult> ShowAsync(
         string title,
         object content,
         string? primaryButtonText = null,
-        string closeButtonText = "OK")
+        string closeButtonText = "OK",
+        string? secondaryButtonText = null)
     {
         await _dialogGate.WaitAsync();
         try
@@ -58,11 +60,16 @@ public sealed class AppMessageBoxService
             if (content is string)
             {
                 dialog.Resources["ContentDialogMinWidth"] = 320.0;
-                dialog.Resources["ContentDialogMaxWidth"] = 480.0;
+                dialog.Resources["ContentDialogMaxWidth"] = string.IsNullOrWhiteSpace(secondaryButtonText)
+                    ? 480.0
+                    : 560.0;
             }
 
             if (!string.IsNullOrWhiteSpace(primaryButtonText))
                 dialog.PrimaryButtonText = primaryButtonText;
+
+            if (!string.IsNullOrWhiteSpace(secondaryButtonText))
+                dialog.SecondaryButtonText = secondaryButtonText;
 
             return await dialog.ShowAsync();
         }

@@ -109,7 +109,7 @@ public sealed class SteamDepotMetadataService
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(20));
-            using var document = await FetchAppInfoAsync(appId, timeout.Token, maxAttempts: 2);
+            using var document = await FetchAppInfoAsync(appId, timeout.Token, maxAttempts: 1);
             long? sum = SumWindowsGameSizeFromSteamCmd(document, appId);
             if (sum is > 0)
             {
@@ -879,7 +879,7 @@ public sealed class SteamDepotMetadataService
     private async Task<JsonDocument?> FetchAppInfoAsync(
         string appId,
         CancellationToken cancellationToken,
-        int maxAttempts = 3)
+        int maxAttempts = 1)
     {
         Exception? lastError = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -895,7 +895,8 @@ public sealed class SteamDepotMetadataService
                 if (!response.IsSuccessStatusCode)
                 {
                     AppLog.Write($"[DepotMetadata] HTTP {(int)response.StatusCode} for appId={appId} (try {attempt})");
-                    await Task.Delay(500 * attempt, cancellationToken);
+                    if (attempt < maxAttempts)
+                        await Task.Delay(500 * attempt, cancellationToken);
                     continue;
                 }
 
@@ -906,7 +907,8 @@ public sealed class SteamDepotMetadataService
 
                 AppLog.Write($"[DepotMetadata] Empty steamcmd payload for appId={appId} (try {attempt})");
                 document.Dispose();
-                await Task.Delay(500 * attempt, cancellationToken);
+                if (attempt < maxAttempts)
+                    await Task.Delay(500 * attempt, cancellationToken);
             }
             catch (Exception ex) when (attempt < maxAttempts)
             {

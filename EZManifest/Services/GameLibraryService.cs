@@ -50,6 +50,8 @@ public sealed class GameLibraryService
 
             if (string.IsNullOrWhiteSpace(game.StartLocation))
                 game.StartLocation = existing?.StartLocation ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(game.LaunchOptions))
+                game.LaunchOptions = existing?.LaunchOptions ?? string.Empty;
             if (string.IsNullOrWhiteSpace(game.InstallPath))
                 game.InstallPath = existing?.InstallPath ?? string.Empty;
             if (game.InstallSizeBytes is not > 0)

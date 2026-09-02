@@ -80,6 +80,7 @@ public partial class App : Application
         services.AddSingleton<GameUninstallService>();
         services.AddSingleton<ShortcutService>();
         services.AddSingleton<CoverArtCache>();
+        services.AddSingleton<AppUpdateService>();
 
         services.AddSingleton<SettingsViewModel>();
         services.AddSingleton<MainWindow>();

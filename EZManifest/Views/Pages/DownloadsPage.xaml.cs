@@ -45,8 +45,10 @@ public sealed partial class DownloadsPage : Page
     private bool _wasInstalledBeforeDownload;
     private string _installPathBeforeDownload = string.Empty;
     private DispatcherQueueTimer? _elapsedTimer;
+    private readonly HashSet<string> _pendingInstallAppIds = new(StringComparer.OrdinalIgnoreCase);
 
     public ObservableCollection<DownloadItem> Downloads { get; } = new();
+    public event Action? InstallingChanged;
 
     public DownloadsPage(
         AppNotificationService notifications,
@@ -78,7 +80,11 @@ public sealed partial class DownloadsPage : Page
         _windowsToast = windowsToast;
 
         InitializeComponent();
-        Downloads.CollectionChanged += (_, _) => UpdateEmptyState();
+        Downloads.CollectionChanged += (_, _) =>
+        {
+            UpdateEmptyState();
+            InstallingChanged?.Invoke();
+        };
         UpdateEmptyState();
     }
 
@@ -655,6 +661,10 @@ public sealed partial class DownloadsPage : Page
 
     public int ActiveDownloadCount => Downloads.Count;
 
+    public bool IsAppInstalling(string appId) =>
+        !string.IsNullOrWhiteSpace(appId) &&
+        (_pendingInstallAppIds.Contains(appId) || IsAppCurrentlyDownloading(appId));
+
     public async Task CancelAllDownloadsAndWaitAsync()
     {
         foreach (var item in Downloads.ToList())
@@ -700,6 +710,36 @@ public sealed partial class DownloadsPage : Page
     }
 
     private async Task ManifestDepotIdChoiceAsync(string luaFilePath, bool removeFromLibraryOnCancel)
+    {
+        string appId = _appId;
+        MarkPendingInstall(appId);
+        try
+        {
+            await ManifestDepotIdChoiceCoreAsync(luaFilePath, removeFromLibraryOnCancel);
+        }
+        finally
+        {
+            UnmarkPendingInstall(appId);
+        }
+    }
+
+    private void MarkPendingInstall(string appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || !_pendingInstallAppIds.Add(appId))
+            return;
+
+        InstallingChanged?.Invoke();
+    }
+
+    private void UnmarkPendingInstall(string appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || !_pendingInstallAppIds.Remove(appId))
+            return;
+
+        InstallingChanged?.Invoke();
+    }
+
+    private async Task ManifestDepotIdChoiceCoreAsync(string luaFilePath, bool removeFromLibraryOnCancel)
     {
         var availableItems = _manifestParser.Parse(luaFilePath);
         var depotIds = availableItems.Select(item => item.DepotId).ToList();
@@ -1036,7 +1076,7 @@ public sealed partial class DownloadsPage : Page
             header.Children.Add(block);
         }
 
-        AddHeaderCell("App ID", 1);
+        AddHeaderCell("Depot ID", 1);
         AddHeaderCell("Manifest ID", 2);
         AddHeaderCell(typeHeader, 3);
         AddHeaderCell("DL size", 4);

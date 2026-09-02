@@ -16,6 +16,7 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableDirPage=no
 DisableProgramGroupPage=yes
+UsePreviousAppDir=no
 OutputDir=installer
 OutputBaseFilename=EZManifest-Setup-{#MyAppVersion}
 SetupIconFile=EZManifest\Assets\EZManifestLogo.ico
@@ -28,6 +29,9 @@ UsedUserAreasWarning=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
+CloseApplications=force
+RestartApplications=no
+DisableFinishedPage=yes
 ; App files default to %LocalAppData%\Programs\EZManifest. Library data stays in %LocalAppData%\EZManifest.
 
 [Languages]
@@ -45,4 +49,4 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; AppUserM
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; AppUserModelID: "dpadGuy.EZManifest"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall

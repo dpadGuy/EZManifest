@@ -9,7 +9,8 @@ public sealed class ShortcutService
         string targetExePath,
         string shortcutTitle,
         string? workingDirectory = null,
-        string? description = null)
+        string? description = null,
+        string? arguments = null)
     {
         if (string.IsNullOrWhiteSpace(targetExePath))
             throw new ArgumentException("Target executable path is required.", nameof(targetExePath));
@@ -29,6 +30,8 @@ public sealed class ShortcutService
         var link = (IShellLinkW)new ShellLink();
         link.SetPath(targetExePath);
         link.SetWorkingDirectory(workingDirectory);
+        if (!string.IsNullOrWhiteSpace(arguments))
+            link.SetArguments(arguments);
         if (!string.IsNullOrWhiteSpace(description))
             link.SetDescription(description);
 

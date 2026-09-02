@@ -233,7 +233,8 @@ public sealed class SteamMetadataService
         text = Regex.Replace(text, @"<[^>]+>", string.Empty);
         text = WebUtility.HtmlDecode(text);
         text = text.Replace("\r\n", "\n").Replace('\r', '\n');
-        text = Regex.Replace(text, @"[ \t]+\n", "\n");
+        text = Regex.Replace(text, @"[ \t\u00a0]+\n", "\n");
+        text = Regex.Replace(text, @"\n[ \t\u00a0]+", "\n");
         text = Regex.Replace(text, @"\n{3,}", "\n\n");
         return text.Trim();
     }
