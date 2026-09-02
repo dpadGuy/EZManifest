@@ -91,10 +91,3 @@ EZManifest/
     Services/        Download engine, Steam metadata, settings, …
     Models/
 ```
-
-## Great resources to use with EZManifest
-https://depotbox.org/
-
-https://github.com/SteamAutoCracks/Steam-auto-crack
-
-https://gamecopyworld.com/games/index.php
