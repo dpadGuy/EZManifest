@@ -52,8 +52,12 @@ public static class GameDownload
         int cdnCellId = 0,
         int maxConcurrentChunks = 16)
     {
-        maxConcurrentChunks = Math.Clamp(maxConcurrentChunks, 1, 64);
-        int maxConnectionsPerServer = Math.Clamp(maxConcurrentChunks, 1, 32);
+        maxConcurrentChunks = Math.Clamp(maxConcurrentChunks, 1, AppSettings.MaxConcurrentChunksLimit);
+        int maxConnectionsPerServer = maxConcurrentChunks;
+        ThreadPool.GetMinThreads(out int minWorkers, out int minIocp);
+        ThreadPool.SetMinThreads(
+            Math.Max(minWorkers, maxConcurrentChunks + 16),
+            Math.Max(minIocp, maxConcurrentChunks));
         var batchSw = Stopwatch.StartNew();
 
         AppLog.Write(
@@ -71,6 +75,7 @@ public static class GameDownload
         long totalBytes = 0;
         var workItems = new List<ChunkWork>();
         var fileStates = new List<FileWriteState>();
+        var pendingFiles = new List<PendingFile>();
         int preparedFiles = 0;
         int skippedDepotsNoKey = 0;
 
@@ -98,7 +103,6 @@ public static class GameDownload
             int depotFiles = 0;
             int depotChunks = 0;
             long depotBytes = 0;
-            int fileIndex = 0;
 
             foreach (var file in manifest.Files!.Where(f => !f.Flags.HasFlag(EDepotFileFlag.Directory)))
             {
@@ -110,52 +114,75 @@ public static class GameDownload
 
                 string safePath = Path.Combine(file.FileName.Split('/', '\\'));
                 string targetPath = Path.Combine(downloadLocation, safePath);
-                string? dir = Path.GetDirectoryName(targetPath);
-                if (!string.IsNullOrEmpty(dir))
-                    Directory.CreateDirectory(dir);
-
                 long fileSize = file.Chunks.Sum(c => (long)c.UncompressedLength);
                 if (file.TotalSize > 0)
                     fileSize = Math.Max(fileSize, (long)file.TotalSize);
 
-                fileIndex++;
-                if (fileIndex <= 12 || fileSize >= 50L * 1024 * 1024 || fileIndex % 100 == 0)
-                {
-                    AppLog.Write(
-                        $"[EZManifest] Depot {depot.DepotId}: prepare #{fileIndex} '{file.FileName}' " +
-                        $"chunks={file.Chunks.Count} size={AppLog.FormatBytes(fileSize)}");
-                }
-
-                // DepotDownloader pre-sizes the file. Mark sparse first so SetLength doesn't
-                // zero-fill on NTFS (high-offset writes without this hang for minutes on E:).
-                await PrepareFileAsync(targetPath, fileSize, cancellationToken);
-                preparedFiles++;
-
-                var state = new FileWriteState(targetPath, file.Chunks.Count);
-                fileStates.Add(state);
-
-                // Offset order reduces gap-extension even on non-sparse volumes.
-                foreach (var chunk in file.Chunks.OrderBy(c => c.Offset))
-                {
-                    workItems.Add(new ChunkWork
-                    {
-                        DepotId = depot.DepotId,
-                        DepotKey = key,
-                        Chunk = chunk,
-                        File = state,
-                        FileName = file.FileName
-                    });
-                    totalBytes += chunk.UncompressedLength;
-                    depotBytes += chunk.UncompressedLength;
-                    depotChunks++;
-                }
-
+                pendingFiles.Add(new PendingFile(depot.DepotId, key, file, targetPath, fileSize));
                 depotFiles++;
+                depotChunks += file.Chunks.Count;
+                depotBytes += fileSize;
             }
 
             AppLog.Write(
-                $"[EZManifest] Depot {depot.DepotId}: ready files={depotFiles} chunks={depotChunks} " +
+                $"[EZManifest] Depot {depot.DepotId}: listed files={depotFiles} chunks={depotChunks} " +
                 $"bytes={AppLog.FormatBytes(depotBytes)} in {depotSw.ElapsedMilliseconds}ms");
+        }
+
+        pendingFiles.Sort((left, right) =>
+        {
+            int bySize = left.FileSize.CompareTo(right.FileSize);
+            return bySize != 0
+                ? bySize
+                : string.Compare(left.File.FileName, right.File.FileName, StringComparison.OrdinalIgnoreCase);
+        });
+
+        if (pendingFiles.Count > 0)
+        {
+            AppLog.Write(
+                $"[EZManifest] File order smallest→largest: first='{pendingFiles[0].File.FileName}' " +
+                $"{AppLog.FormatBytes(pendingFiles[0].FileSize)} last='{pendingFiles[^1].File.FileName}' " +
+                $"{AppLog.FormatBytes(pendingFiles[^1].FileSize)}");
+        }
+
+        int fileIndex = 0;
+        foreach (PendingFile pending in pendingFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string? dir = Path.GetDirectoryName(pending.TargetPath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            fileIndex++;
+            if (fileIndex <= 12 || pending.FileSize >= 50L * 1024 * 1024 || fileIndex % 100 == 0)
+            {
+                AppLog.Write(
+                    $"[EZManifest] Depot {pending.DepotId}: prepare #{fileIndex}/{pendingFiles.Count} '{pending.File.FileName}' " +
+                    $"chunks={pending.File.Chunks.Count} size={AppLog.FormatBytes(pending.FileSize)}");
+            }
+
+            // DepotDownloader pre-sizes the file. Mark sparse first so SetLength doesn't
+            // zero-fill on NTFS (high-offset writes without this hang for minutes on E:).
+            await PrepareFileAsync(pending.TargetPath, pending.FileSize, cancellationToken);
+            preparedFiles++;
+
+            var state = new FileWriteState(pending.TargetPath, pending.File.Chunks.Count);
+            fileStates.Add(state);
+
+            // Offset order reduces gap-extension even on non-sparse volumes.
+            foreach (var chunk in pending.File.Chunks.OrderBy(c => c.Offset))
+            {
+                workItems.Add(new ChunkWork
+                {
+                    DepotId = pending.DepotId,
+                    DepotKey = pending.Key,
+                    Chunk = chunk,
+                    File = state,
+                    FileName = pending.File.FileName
+                });
+                totalBytes += chunk.UncompressedLength;
+            }
         }
 
         if (skippedDepotsNoKey > 0)
@@ -166,7 +193,7 @@ public static class GameDownload
             $"bytes={AppLog.FormatBytes(totalBytes)} ({totalBytes}) CDN hosts={servers.Count} " +
             $"prep={batchSw.ElapsedMilliseconds}ms");
         progressReporter.Report(new DownloadProgress(0, totalBytes, 0));
-        AppLog.Write($"[EZManifest] Starting {maxConcurrentChunks} chunk worker(s)...");
+        AppLog.Write($"[EZManifest] Starting {maxConcurrentChunks} chunk worker(s) for max throughput");
 
         using var handler = new SocketsHttpHandler
         {
@@ -648,6 +675,13 @@ public static class GameDownload
 
         return servers;
     }
+
+    private readonly record struct PendingFile(
+        string DepotId,
+        byte[] Key,
+        DepotManifest.FileData File,
+        string TargetPath,
+        long FileSize);
 
     private sealed class ChunkWork
     {

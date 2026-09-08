@@ -1,40 +1,53 @@
 using System.Runtime.InteropServices;
+using System.Security;
 using EZManifest.Models;
-using Microsoft.Windows.AppNotifications;
-using Microsoft.Windows.AppNotifications.Builder;
+using Windows.Data.Xml.Dom;
+using Windows.Graphics.Imaging;
+using Windows.Storage;
+using Windows.UI.Notifications;
 
 namespace EZManifest.Services;
 
 public sealed class WindowsToastService
 {
     public const string AppUserModelId = "dpadGuy.EZManifest";
+    private const int MaxToastImageBytes = 180_000;
 
     private readonly AppSettingsService _settingsService;
-    private bool _registered;
+    private readonly SteamMetadataService _steamMetadata;
+    private bool _initialized;
+    private bool _canShow;
 
-    public WindowsToastService(AppSettingsService settingsService)
+    public WindowsToastService(AppSettingsService settingsService, SteamMetadataService steamMetadata)
     {
         _settingsService = settingsService;
+        _steamMetadata = steamMetadata;
     }
 
     public void Initialize()
     {
-        if (_registered)
+        if (_initialized)
             return;
+
+        _initialized = true;
 
         try
         {
             SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
-            AppNotificationManager.Default.Register();
-            _registered = true;
+            _ = ToastNotificationManager.CreateToastNotifier(AppUserModelId);
+            _canShow = true;
         }
         catch (Exception ex)
         {
-            AppLog.Write(ex, "Windows notification registration failed");
+            AppLog.Write($"[Toast] Windows toast notifier unavailable ({ex.Message.Trim()})");
+            _canShow = false;
         }
     }
 
-    public async Task NotifyInstallCompleteAsync(string gameName)
+    public async Task NotifyInstallCompleteAsync(
+        string gameName,
+        string? appId = null,
+        string? coverArtPath = null)
     {
         AppSettings settings;
         try
@@ -51,27 +64,185 @@ public sealed class WindowsToastService
             return;
 
         string name = string.IsNullOrWhiteSpace(gameName) ? "Game" : gameName.Trim();
-        Show($"Install complete for {name}");
+        string? imagePath = await PrepareToastImageAsync(appId, coverArtPath);
+        Show($"Install complete for {name}", imagePath);
     }
 
-    private void Show(string title)
+    private void Show(string title, string? imagePath)
     {
         Initialize();
-        if (!_registered)
+        if (!_canShow)
             return;
 
         try
         {
-            var notification = new AppNotificationBuilder()
-                .AddText(title)
-                .BuildNotification();
+            string? imageUri = ToFileUri(imagePath);
+            AppLog.Write($"[Toast] title='{title}' image='{imagePath ?? "(none)"}' uri='{imageUri ?? "(none)"}'");
 
-            AppNotificationManager.Default.Show(notification);
+            string xml = imageUri is null
+                ? $@"<toast><visual><binding template=""ToastGeneric""><text>{SecurityElement.Escape(title)}</text></binding></visual></toast>"
+                : $@"<toast><visual><binding template=""ToastGeneric""><image placement=""appLogoOverride"" src=""{SecurityElement.Escape(imageUri)}""/><text>{SecurityElement.Escape(title)}</text></binding></visual></toast>";
+
+            var document = new XmlDocument();
+            document.LoadXml(xml);
+            ToastNotificationManager.CreateToastNotifier(AppUserModelId)
+                .Show(new ToastNotification(document));
         }
         catch (Exception ex)
         {
             AppLog.Write(ex, "Windows notification failed");
         }
+    }
+
+    private async Task<string?> PrepareToastImageAsync(string? appId, string? coverArtPath)
+    {
+        try
+        {
+            string? iconPath = SteamMetadataService.ResolveIconPath(coverArtPath, appId);
+            if (!FileExists(iconPath) && !string.IsNullOrWhiteSpace(appId) && !string.IsNullOrWhiteSpace(iconPath))
+                await _steamMetadata.DownloadIconAsync(appId, iconPath);
+
+            string? source = FirstExisting(
+                iconPath,
+                Sibling(coverArtPath, "GameLogo.png"),
+                coverArtPath);
+            if (source is null)
+            {
+                AppLog.Write("[Toast] No game image found for notification");
+                return null;
+            }
+
+            string cacheDir = Path.Combine(AppPaths.DataDirectory, "ToastIcons");
+            Directory.CreateDirectory(cacheDir);
+            string cachePath = Path.Combine(
+                cacheDir,
+                $"{SanitizeFileName(string.IsNullOrWhiteSpace(appId) ? "game" : appId)}.jpg");
+
+            var info = new FileInfo(source);
+            if (info.Length <= MaxToastImageBytes &&
+                (source.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                 source.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)))
+            {
+                File.Copy(source, cachePath, overwrite: true);
+                return cachePath;
+            }
+
+            if (await WriteSmallJpegAsync(source, cachePath))
+                return cachePath;
+
+            if (info.Length <= MaxToastImageBytes)
+            {
+                File.Copy(source, cachePath, overwrite: true);
+                return cachePath;
+            }
+
+            AppLog.Write($"[Toast] Image too large for toast ({info.Length} bytes): {source}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Toast image prepare failed");
+            return null;
+        }
+    }
+
+    private static async Task<bool> WriteSmallJpegAsync(string sourcePath, string destPath)
+    {
+        try
+        {
+            StorageFile source = await StorageFile.GetFileFromPathAsync(sourcePath);
+            using var input = await source.OpenReadAsync();
+            BitmapDecoder decoder = await BitmapDecoder.CreateAsync(input);
+
+            const uint side = 128;
+            var transform = new BitmapTransform
+            {
+                ScaledWidth = side,
+                ScaledHeight = side,
+                InterpolationMode = BitmapInterpolationMode.Fant
+            };
+            PixelDataProvider pixels = await decoder.GetPixelDataAsync(
+                BitmapPixelFormat.Bgra8,
+                BitmapAlphaMode.Premultiplied,
+                transform,
+                ExifOrientationMode.RespectExifOrientation,
+                ColorManagementMode.DoNotColorManage);
+
+            string? directory = Path.GetDirectoryName(destPath);
+            if (string.IsNullOrWhiteSpace(directory))
+                return false;
+
+            Directory.CreateDirectory(directory);
+            StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(directory);
+            StorageFile dest = await folder.CreateFileAsync(
+                Path.GetFileName(destPath),
+                CreationCollisionOption.ReplaceExisting);
+            using var output = await dest.OpenAsync(FileAccessMode.ReadWrite);
+            output.Size = 0;
+            BitmapEncoder encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, output);
+            encoder.SetPixelData(
+                BitmapPixelFormat.Bgra8,
+                BitmapAlphaMode.Premultiplied,
+                side,
+                side,
+                96,
+                96,
+                pixels.DetachPixelData());
+            await encoder.FlushAsync();
+            return FileExists(destPath);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Toast image shrink failed");
+            return false;
+        }
+    }
+
+    private static string? FirstExisting(params string?[] paths)
+    {
+        foreach (string? path in paths)
+        {
+            if (FileExists(path))
+                return path;
+        }
+
+        return null;
+    }
+
+    private static string? Sibling(string? path, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        string? directory = Path.GetDirectoryName(path);
+        return string.IsNullOrWhiteSpace(directory) ? null : Path.Combine(directory, fileName);
+    }
+
+    private static bool FileExists(string? path) =>
+        !string.IsNullOrWhiteSpace(path) && File.Exists(path) && new FileInfo(path).Length > 0;
+
+    private static string? ToFileUri(string? path)
+    {
+        if (!FileExists(path))
+            return null;
+
+        string full = Path.GetFullPath(path!).Replace('\\', '/');
+        if (full.Length >= 2 && full[1] == ':')
+            return "file:///" + Uri.EscapeDataString(full).Replace("%2F", "/").Replace("%3A", ":");
+
+        return new UriBuilder
+        {
+            Scheme = Uri.UriSchemeFile,
+            Host = string.Empty,
+            Path = Path.GetFullPath(path!)
+        }.Uri.AbsoluteUri;
+    }
+
+    private static string SanitizeFileName(string name)
+    {
+        foreach (char c in Path.GetInvalidFileNameChars())
+            name = name.Replace(c, '_');
+        return string.IsNullOrWhiteSpace(name) ? "game" : name;
     }
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]

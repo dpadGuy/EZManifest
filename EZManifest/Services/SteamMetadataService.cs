@@ -3,6 +3,8 @@ using System.Net.Http;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using EZManifest.Models;
+using Windows.Graphics.Imaging;
+using Windows.Storage;
 
 namespace EZManifest.Services;
 
@@ -270,7 +272,13 @@ public sealed class SteamMetadataService
             return false;
 
         if (File.Exists(iconPath) && new FileInfo(iconPath).Length > 0)
-            return true;
+        {
+            if (await IsSquareIconAsync(iconPath, cancellationToken))
+                return true;
+
+            AppLog.Write($"[SteamMetadata] Replacing wide GameIcon (capsule/logo) at {iconPath}");
+            TryDelete(iconPath);
+        }
 
         string? hash = await GetCommunityIconHashAsync(appId, cancellationToken);
         if (string.IsNullOrWhiteSpace(hash))
@@ -285,22 +293,69 @@ public sealed class SteamMetadataService
 
         foreach (string url in urls)
         {
-            if (await DownloadIfAvailableAsync(url, iconPath, cancellationToken))
+            if (!await DownloadIfAvailableAsync(url, iconPath, cancellationToken))
+                continue;
+
+            if (await IsSquareIconAsync(iconPath, cancellationToken))
                 return true;
+
+            TryDelete(iconPath);
         }
 
         return false;
     }
 
-    public static string? ResolveIconPath(string? coverImagePath)
+    public static string? ResolveIconPath(string? coverImagePath, string? appId = null)
     {
-        if (string.IsNullOrWhiteSpace(coverImagePath))
-            return null;
+        if (!string.IsNullOrWhiteSpace(coverImagePath))
+        {
+            string? directory = Path.GetDirectoryName(coverImagePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                return Path.Combine(directory, "GameIcon.jpg");
+        }
 
-        string? directory = Path.GetDirectoryName(coverImagePath);
-        return string.IsNullOrWhiteSpace(directory)
-            ? null
-            : Path.Combine(directory, "GameIcon.jpg");
+        if (!string.IsNullOrWhiteSpace(appId))
+            return Path.Combine(AppPaths.ManifestsDirectory, $"undefined_{appId}", "Assets", "GameIcon.jpg");
+
+        return null;
+    }
+
+    private static async Task<bool> IsSquareIconAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            StorageFile file = await StorageFile.GetFileFromPathAsync(path);
+            using var stream = await file.OpenReadAsync();
+            BitmapDecoder decoder = await BitmapDecoder.CreateAsync(stream);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0)
+                return false;
+
+            double ratio = (double)Math.Max(decoder.PixelWidth, decoder.PixelHeight)
+                / Math.Min(decoder.PixelWidth, decoder.PixelHeight);
+            return ratio <= 1.35;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, $"Could not delete '{path}'");
+        }
     }
 
     private async Task<string?> GetCommunityIconHashAsync(string appId, CancellationToken cancellationToken)

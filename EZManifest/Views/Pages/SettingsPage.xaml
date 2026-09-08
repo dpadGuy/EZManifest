@@ -10,157 +10,296 @@
 
     <Page.Resources>
         <helpers:EnumToBooleanConverter x:Key="EnumToBooleanConverter" />
+
+        <Style x:Key="SettingsSectionHeaderStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="4,20,0,8" />
+        </Style>
+
+        <Style x:Key="SettingsCardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="16,14" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+        </Style>
+
+        <Style x:Key="SettingsCardIconStyle" TargetType="FontIcon">
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons" />
+            <Setter Property="FontSize" Value="20" />
+            <Setter Property="Width" Value="20" />
+            <Setter Property="VerticalAlignment" Value="Top" />
+            <Setter Property="Margin" Value="0,2,16,0" />
+        </Style>
+
+        <Style x:Key="SettingsCardTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="TextWrapping" Value="WrapWholeWords" />
+        </Style>
+
+        <Style x:Key="SettingsCardDescriptionStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="TextWrapping" Value="WrapWholeWords" />
+            <Setter Property="Margin" Value="0,2,0,0" />
+        </Style>
     </Page.Resources>
 
     <Grid>
-        <ScrollViewer Padding="24">
-            <StackPanel Spacing="8" MaxWidth="720" HorizontalAlignment="Left">
-                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                    <TextBlock FontSize="30" FontWeight="SemiBold" Text="Settings" />
-                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE713;" FontSize="30" VerticalAlignment="Center" />
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                    <TextBlock FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" Text="Theme" />
-                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE790;" FontSize="20" VerticalAlignment="Center" />
-                </StackPanel>
-
-                <RadioButton
-                    Content="Light"
-                    GroupName="themeSelect"
-                    Command="{x:Bind ViewModel.ChangeThemeCommand}"
-                    CommandParameter="theme_light"
-                    IsChecked="{x:Bind ViewModel.CurrentTheme, Converter={StaticResource EnumToBooleanConverter}, ConverterParameter=Light, Mode=OneWay}" />
-                <RadioButton
-                    Content="Dark"
-                    GroupName="themeSelect"
-                    Command="{x:Bind ViewModel.ChangeThemeCommand}"
-                    CommandParameter="theme_dark"
-                    IsChecked="{x:Bind ViewModel.CurrentTheme, Converter={StaticResource EnumToBooleanConverter}, ConverterParameter=Dark, Mode=OneWay}" />
-
-                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                    <TextBlock
-                    FontSize="20"
-                    FontWeight="SemiBold"
-                    Text="Enter your download path" />
-                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE896;" FontSize="20" VerticalAlignment="Center" />
+        <ScrollViewer
+            Padding="36,24,36,64"
+            HorizontalScrollBarVisibility="Disabled"
+            VerticalScrollBarVisibility="Auto">
+            <StackPanel
+                MaxWidth="1008"
+                HorizontalAlignment="Center"
+                Spacing="2">
+                <StackPanel
+                    Orientation="Horizontal"
+                    Spacing="10"
+                    Margin="0,4,0,8">
+                    <TextBlock FontSize="28" FontWeight="SemiBold" Text="Settings" />
+                    <FontIcon
+                        FontFamily="Segoe Fluent Icons"
+                        Glyph="&#xE713;"
+                        FontSize="22"
+                        VerticalAlignment="Center" />
                 </StackPanel>
 
-                <Grid ColumnSpacing="12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
+                <TextBlock Style="{StaticResource SettingsSectionHeaderStyle}" Text="Appearance" />
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource SettingsCardIconStyle}" Glyph="&#xE790;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Style="{StaticResource SettingsCardTitleStyle}" Text="Theme" />
+                            <TextBlock
+                                Style="{StaticResource SettingsCardDescriptionStyle}"
+                                Text="Choose Light or Dark for EZManifest." />
+                        </StackPanel>
+                        <StackPanel
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            Spacing="16">
+                            <RadioButton
+                                Content="Light"
+                                GroupName="themeSelect"
+                                Command="{x:Bind ViewModel.ChangeThemeCommand}"
+                                CommandParameter="theme_light"
+                                IsChecked="{x:Bind ViewModel.CurrentTheme, Converter={StaticResource EnumToBooleanConverter}, ConverterParameter=Light, Mode=OneWay}" />
+                            <RadioButton
+                                Content="Dark"
+                                GroupName="themeSelect"
+                                Command="{x:Bind ViewModel.ChangeThemeCommand}"
+                                CommandParameter="theme_dark"
+                                IsChecked="{x:Bind ViewModel.CurrentTheme, Converter={StaticResource EnumToBooleanConverter}, ConverterParameter=Dark, Mode=OneWay}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
 
-                    <Button Content="Apply" Click="ApplyPathButton_Click" Style="{StaticResource AccentButtonStyle}" />
-                    <TextBox
-                        x:Name="DownloadPathTextBox"
-                        Grid.Column="1"
-                        MinWidth="420"
-                        PlaceholderText="Enter your download path here..." />
-                </Grid>
+                <TextBlock Style="{StaticResource SettingsSectionHeaderStyle}" Text="Install" />
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <Grid RowSpacing="12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Style="{StaticResource SettingsCardIconStyle}" Glyph="&#xE774;" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource SettingsCardTitleStyle}" Text="Preferred manifests source" />
+                                <TextBlock
+                                    Style="{StaticResource SettingsCardDescriptionStyle}"
+                                    Text="Replace DepotBox on the Installs page with your own website. Turn this on, enter the address, then Apply." />
+                            </StackPanel>
+                            <ToggleSwitch
+                                x:Name="PreferredSourceToggle"
+                                Grid.Column="2"
+                                VerticalAlignment="Center"
+                                OnContent=""
+                                OffContent=""
+                                MinWidth="0"
+                                Toggled="PreferredSourceToggle_Toggled" />
+                        </Grid>
+                        <Grid Grid.Row="1" ColumnSpacing="8" Margin="47,0,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox
+                                x:Name="PreferredSourceTextBox"
+                                IsEnabled="False"
+                                PlaceholderText="https://example.com" />
+                            <Button
+                                x:Name="ApplyPreferredSourceButton"
+                                Grid.Column="1"
+                                Content="Apply"
+                                IsEnabled="False"
+                                Click="ApplyPreferredSourceButton_Click"
+                                Style="{StaticResource AccentButtonStyle}" />
+                        </Grid>
+                    </Grid>
+                </Border>
 
-                <Button
-                    HorizontalAlignment="Right"
-                    Content="Browse"
-                    Click="BrowseButton_Click"
-                    Style="{StaticResource AccentButtonStyle}" />
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <Grid RowSpacing="12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Style="{StaticResource SettingsCardIconStyle}" Glyph="&#xE896;" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource SettingsCardTitleStyle}" Text="Install path" />
+                                <TextBlock
+                                    Style="{StaticResource SettingsCardDescriptionStyle}"
+                                    Text="Folder where games are installed." />
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="2"
+                                VerticalAlignment="Center"
+                                Orientation="Horizontal"
+                                Spacing="8">
+                                <Button Content="Browse" Click="BrowseButton_Click" />
+                                <Button Content="Apply" Click="ApplyPathButton_Click" Style="{StaticResource AccentButtonStyle}" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBox
+                            x:Name="DownloadPathTextBox"
+                            Grid.Row="1"
+                            Margin="47,0,0,0"
+                            PlaceholderText="Enter your download path here..." />
+                    </Grid>
+                </Border>
 
-                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                    <TextBlock
-                    FontSize="20"
-                    FontWeight="SemiBold"
-                    Text="CDN region" />
-                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE707;" FontSize="20" VerticalAlignment="Center" />
-                </StackPanel>
-                <TextBlock
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="Chooses which Steam content cell to query for download servers. Auto uses Steam's default list."
-                    TextWrapping="WrapWholeWords" />
-                <ComboBox
-                    x:Name="CdnRegionComboBox"
-                    MinWidth="360"
-                    MaxDropDownHeight="420"
-                    HorizontalAlignment="Left"
-                    IsTextSearchEnabled="True"
-                    SelectionChanged="CdnRegionComboBox_SelectionChanged" />
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource SettingsCardIconStyle}" Glyph="&#xE707;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Style="{StaticResource SettingsCardTitleStyle}" Text="CDN region" />
+                            <TextBlock
+                                Style="{StaticResource SettingsCardDescriptionStyle}"
+                                Text="Chooses which Steam content cell to query for download servers. Auto uses Steam's default list." />
+                        </StackPanel>
+                        <ComboBox
+                            x:Name="CdnRegionComboBox"
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            MinWidth="220"
+                            MaxDropDownHeight="420"
+                            IsTextSearchEnabled="True"
+                            SelectionChanged="CdnRegionComboBox_SelectionChanged" />
+                    </Grid>
+                </Border>
 
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource SettingsCardIconStyle}" Glyph="&#xE762;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Style="{StaticResource SettingsCardTitleStyle}" Text="Download concurrency" />
+                            <TextBlock
+                                Style="{StaticResource SettingsCardDescriptionStyle}"
+                                Text="How many depot chunks to download at once (1–64). Default is 16 on a normal PC, or 64 on GeForce Now. Applies to new downloads." />
+                        </StackPanel>
+                        <StackPanel
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            Spacing="8">
+                            <TextBox
+                                x:Name="MaxChunksTextBox"
+                                Width="72"
+                                PlaceholderText="16"
+                                InputScope="Number" />
+                            <Button Content="Apply" Click="ApplyChunksButton_Click" Style="{StaticResource AccentButtonStyle}" />
+                            <Button Content="Restore default" Click="RestoreChunksDefaultButton_Click" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
 
-                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                    <TextBlock
-                    FontSize="20"
-                    FontWeight="SemiBold"
-                    Text="Download concurrency" />
-                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE762;" FontSize="20" VerticalAlignment="Center" />
-                </StackPanel>
-                <TextBlock
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="How many depot chunks to download at once (1–64). Higher can be faster on good connections; too high may cause CDN timeouts. Default is 16. Applies to new downloads."
-                    TextWrapping="WrapWholeWords" />
-                <Grid ColumnSpacing="12" Margin="0,4,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="120" />
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
+                <TextBlock Style="{StaticResource SettingsSectionHeaderStyle}" Text="Notifications" />
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource SettingsCardIconStyle}" Glyph="&#xEA8F;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Style="{StaticResource SettingsCardTitleStyle}" Text="Install notifications" />
+                            <TextBlock
+                                Style="{StaticResource SettingsCardDescriptionStyle}"
+                                Text="Show a Windows notification when a game finishes installing." />
+                        </StackPanel>
+                        <ToggleSwitch
+                            x:Name="NotifyOnInstallToggle"
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            OnContent=""
+                            OffContent=""
+                            MinWidth="0"
+                            Toggled="NotifyOnInstallToggle_Toggled" />
+                    </Grid>
+                </Border>
 
-                    <Button
-                        Content="Apply"
-                        Click="ApplyChunksButton_Click"
-                        Style="{StaticResource AccentButtonStyle}" />
-                    <TextBox
-                        x:Name="MaxChunksTextBox"
-                        Grid.Column="1"
-                        PlaceholderText="16"
-                        InputScope="Number" />
-                    <Button
-                        Grid.Row="1"
-                        Grid.Column="1"
-                        Margin="0,8,0,0"
-                        HorizontalAlignment="Stretch"
-                        Content="Restore default"
-                        Click="RestoreChunksDefaultButton_Click" />
-                </Grid>
-
-                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                    <TextBlock
-                        FontSize="20"
-                        FontWeight="SemiBold"
-                        Text="Notifications" />
-                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xEA8F;" FontSize="20" VerticalAlignment="Center" />
-                </StackPanel>
-                <TextBlock
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="Show a Windows notification when a game finishes installing."
-                    TextWrapping="WrapWholeWords" />
-                <ToggleSwitch
-                    x:Name="NotifyOnInstallToggle"
-                    OnContent="On"
-                    OffContent="Off"
-                    Toggled="NotifyOnInstallToggle_Toggled" />
-
-                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                    <TextBlock
-                        FontSize="20"
-                        FontWeight="SemiBold"
-                        Text="Updates" />
-                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE895;" FontSize="20" VerticalAlignment="Center" />
-                </StackPanel>
-                <TextBlock
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="EZManifest checks for the latest version and shows an update prompt if newer version is available."
-                    TextWrapping="WrapWholeWords" />
-                <ToggleSwitch
-                    x:Name="CheckForUpdatesToggle"
-                    OnContent="On"
-                    OffContent="Off"
-                    Toggled="CheckForUpdatesToggle_Toggled" />
-                <Button
-                    Content="Check now"
-                    Click="CheckForUpdatesButton_Click"
-                    Style="{StaticResource AccentButtonStyle}" />
+                <TextBlock Style="{StaticResource SettingsSectionHeaderStyle}" Text="Updates" />
+                <Border Style="{StaticResource SettingsCardStyle}">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Style="{StaticResource SettingsCardIconStyle}" Glyph="&#xE895;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Style="{StaticResource SettingsCardTitleStyle}" Text="Check for updates" />
+                            <TextBlock
+                                Style="{StaticResource SettingsCardDescriptionStyle}"
+                                Text="EZManifest checks GitHub for a newer version, including hotfix releases, and shows an update prompt if one is available." />
+                        </StackPanel>
+                        <StackPanel
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            Spacing="12">
+                            <Button Content="Check now" Click="CheckForUpdatesButton_Click" />
+                            <ToggleSwitch
+                                x:Name="CheckForUpdatesToggle"
+                                OnContent=""
+                                OffContent=""
+                                MinWidth="0"
+                                Toggled="CheckForUpdatesToggle_Toggled" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
             </StackPanel>
         </ScrollViewer>
 

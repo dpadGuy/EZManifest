@@ -10,8 +10,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
 using Windows.Graphics;
-using Windows.Storage.Pickers;
-using WinRT.Interop;
 
 namespace EZManifest;
 
@@ -26,6 +24,7 @@ public sealed partial class MainWindow : Window
     private readonly AppNavigationService _navigationService;
     private readonly GameLibraryService _gameLibrary;
     private readonly AppUpdateService _updateService;
+    private readonly FileExplorerPickerService _filePicker;
     private bool _startupInstallPromptShown;
     private bool _centeredOnStartup;
     private bool _allowClose;
@@ -40,7 +39,8 @@ public sealed partial class MainWindow : Window
         WindowProvider windowProvider,
         AppNavigationService navigationService,
         GameLibraryService gameLibrary,
-        AppUpdateService updateService)
+        AppUpdateService updateService,
+        FileExplorerPickerService filePicker)
     {
         _services = services;
         _messageBoxService = messageBoxService;
@@ -51,6 +51,7 @@ public sealed partial class MainWindow : Window
         _navigationService = navigationService;
         _gameLibrary = gameLibrary;
         _updateService = updateService;
+        _filePicker = filePicker;
 
         InitializeComponent();
 
@@ -91,6 +92,7 @@ public sealed partial class MainWindow : Window
                 ConfigureCaptionButtonColors();
                 UpdateTitleBarPassthroughRegion();
                 await LoadLibraryFilterSettingAsync();
+                await ShowWelcomeGuideIfNeededAsync();
                 await PromptForInstallLocationIfNeededAsync();
                 await CheckForAppUpdateOnStartupAsync();
                 await UpdateLibraryCountAsync();
@@ -99,6 +101,49 @@ public sealed partial class MainWindow : Window
 
         RootNavigation.SelectedItem = RootNavigation.MenuItems[0];
         NavigateTo("Library");
+    }
+
+    private async Task ShowWelcomeGuideIfNeededAsync()
+    {
+        try
+        {
+            var settings = await _settingsService.LoadAsync();
+            if (settings.HasSeenWelcomeGuide)
+                return;
+
+            await ShowWelcomeGuideAsync();
+            await _settingsService.UpdateAsync(s => s.HasSeenWelcomeGuide = true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Welcome guide failed");
+        }
+    }
+
+    private async Task ShowWelcomeGuideAsync()
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "Welcome to EZManifest",
+            Content = new TextBlock
+            {
+                Text =
+                    "1. Pick a manifest zip file or folder from the Installs section. These can be obtained from all sorts of websites. EZManifest lets you use your own manifests or DepotBox, which is built in. There will be a pop-up on how to use DepotBox.\n\n" +
+                    "2. Once you have chosen your game and installed it, you can start playing. If the game has more sophisticated DRM than Steam DRM, use the Apply game fix section. The first-time pop-up there will guide you.\n\n" +
+                    "3. Enjoy!\n\n" +
+                    "Settings can be tweaked to your liking from the Settings section in the left bar.",
+                TextWrapping = TextWrapping.WrapWholeWords
+            },
+            PrimaryButtonText = "OK",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+            RequestedTheme = Content is FrameworkElement root ? root.ActualTheme : ElementTheme.Default
+        };
+        dialog.Resources["ContentDialogMinHeight"] = 0.0;
+        dialog.Resources["ContentDialogMinWidth"] = 420.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 560.0;
+
+        await dialog.ShowAsync();
     }
 
     private async Task LoadLibraryFilterSettingAsync()
@@ -276,6 +321,17 @@ public sealed partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(settings.DownloadPath))
             return;
 
+        if (GeForceNowHost.TryGetDefaultInstallPath(out string gfnPath))
+        {
+            await _settingsService.UpdateAsync(current => current.DownloadPath = gfnPath);
+            _notificationService.Show(
+                "Install location set",
+                $"{gfnPath} (GeForce Now)",
+                InfoBarSeverity.Success);
+            AppLog.Write($"[Startup] GeForce Now detected (C:\\asgard). Install path set to {gfnPath}");
+            return;
+        }
+
         var result = await _messageBoxService.ShowAsync(
             "Set install location",
             "No default install location is configured. Choose a folder where downloaded games will be saved.",
@@ -285,19 +341,16 @@ public sealed partial class MainWindow : Window
         if (result != ContentDialogResult.Primary)
             return;
 
-        var picker = new FolderPicker();
-        InitializeWithWindow.Initialize(picker, _windowProvider.GetWindowHandle());
-        picker.SuggestedStartLocation = PickerLocationId.Desktop;
-        picker.FileTypeFilter.Add("*");
-
-        var folder = await picker.PickSingleFolderAsync();
-        if (folder is null)
+        string? folder = await _filePicker.PickFolderAsync(
+            "Select install folder",
+            KnownExplorerFolders.Desktop);
+        if (string.IsNullOrWhiteSpace(folder))
             return;
 
-        await _settingsService.UpdateAsync(settings => settings.DownloadPath = folder.Path);
+        await _settingsService.UpdateAsync(settings => settings.DownloadPath = folder);
         _notificationService.Show(
             "Install location set",
-            folder.Path,
+            folder,
             InfoBarSeverity.Success);
     }
 
@@ -403,10 +456,16 @@ public sealed partial class MainWindow : Window
 
     private void NavigateTo(string tag)
     {
+        if (ContentFrame.Content is PatchPage leavingPatch && tag != "Patch")
+            leavingPatch.ReleaseBrowser();
+        if (ContentFrame.Content is DownloadsPage leavingDownloads && tag != "Downloads")
+            leavingDownloads.ReleaseBrowser();
+
         Page page = tag switch
         {
             "Library" => _services.GetRequiredService<LibraryPage>(),
             "Downloads" => _services.GetRequiredService<DownloadsPage>(),
+            "Patch" => _services.GetRequiredService<PatchPage>(),
             "Debug" => _services.GetRequiredService<DebugConsolePage>(),
             "Settings" => _services.GetRequiredService<SettingsPage>(),
             _ => _services.GetRequiredService<LibraryPage>()

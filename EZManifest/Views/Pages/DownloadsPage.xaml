@@ -8,19 +8,20 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
-    <Grid
-        x:Name="DownloadsRoot"
-        Padding="10"
-        AllowDrop="True"
-        DragEnter="ManifestDropZone_DragEnter"
-        DragOver="ManifestDropZone_DragOver"
-        DragLeave="ManifestDropZone_DragLeave"
-        Drop="ManifestDropZone_Drop"
-        Background="Transparent">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
+    <Grid>
+        <Grid
+            x:Name="DownloadsRoot"
+            Padding="10"
+            AllowDrop="True"
+            DragEnter="ManifestDropZone_DragEnter"
+            DragOver="ManifestDropZone_DragOver"
+            DragLeave="ManifestDropZone_DragLeave"
+            Drop="ManifestDropZone_Drop"
+            Background="Transparent">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
 
         <!-- Shown while downloads are active. -->
         <StackPanel
@@ -34,6 +35,12 @@
                 Padding="20,10"
                 Content="Browse manifests"
                 Click="BrowseManifests_Click" />
+            <Button
+                x:Name="ActiveSourceButton"
+                MinHeight="40"
+                Padding="20,10"
+                Content="DepotBox"
+                Click="UseDepotBox_Click" />
         </StackPanel>
 
         <ScrollViewer
@@ -173,6 +180,15 @@
                         TextWrapping="WrapWholeWords"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                         Text="Multiple .zip files or folders (picker or drag and drop)" />
+                    <Button
+                        x:Name="EmptySourceButton"
+                        HorizontalAlignment="Stretch"
+                        MinHeight="44"
+                        Margin="0,8,0,0"
+                        Padding="28,12"
+                        FontSize="15"
+                        Content="Use DepotBox instead"
+                        Click="UseDepotBox_Click" />
                 </StackPanel>
                 <TextBlock
                     x:Name="DropZoneHint"
@@ -197,5 +213,81 @@
             CornerRadius="8"
             Background="#220078D4"
             BorderBrush="#FF0078D4" />
+        </Grid>
+
+        <Grid
+            x:Name="DepotBoxPanel"
+            Visibility="Collapsed"
+            Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Grid
+                Padding="10,8"
+                ColumnSpacing="8"
+                Background="{ThemeResource SolidBackgroundFillColorSecondaryBrush}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Button
+                    x:Name="DepotBoxBackButton"
+                    Width="36"
+                    Height="32"
+                    Padding="0"
+                    IsEnabled="False"
+                    ToolTipService.ToolTip="Back"
+                    Click="DepotBoxBack_Click">
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE72B;" FontSize="14" />
+                </Button>
+                <Button
+                    x:Name="DepotBoxForwardButton"
+                    Grid.Column="1"
+                    Width="36"
+                    Height="32"
+                    Padding="0"
+                    IsEnabled="False"
+                    ToolTipService.ToolTip="Forward"
+                    Click="DepotBoxForward_Click">
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE72A;" FontSize="14" />
+                </Button>
+                <Button
+                    x:Name="DepotBoxCloseButton"
+                    Grid.Column="2"
+                    Width="36"
+                    Height="32"
+                    Padding="0"
+                    ToolTipService.ToolTip="Close DepotBox"
+                    Click="DepotBoxClose_Click">
+                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE711;" FontSize="14" />
+                </Button>
+                <TextBox
+                    x:Name="DepotBoxAddressBox"
+                    Grid.Column="3"
+                    VerticalAlignment="Center"
+                    PlaceholderText="Enter an address"
+                    KeyDown="DepotBoxAddressBox_KeyDown" />
+                <Button
+                    Grid.Column="4"
+                    Content="Go"
+                    Click="DepotBoxGo_Click"
+                    Style="{StaticResource AccentButtonStyle}" />
+            </Grid>
+
+            <Grid
+                x:Name="DepotBoxBrowserHost"
+                Grid.Row="1">
+                <WebView2
+                    x:Name="DepotBoxBrowser"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch" />
+            </Grid>
+        </Grid>
     </Grid>
 </Page>

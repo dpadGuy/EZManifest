@@ -8,4 +8,6 @@ public sealed class AppUpdateInfo
     public required string FileName { get; init; }
     public string ReleaseNotes { get; init; } = string.Empty;
     public Uri? ReleasePageUri { get; init; }
+    public bool IsHotfix { get; init; }
+    public int HotfixNumber { get; init; }
 }

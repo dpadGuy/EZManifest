@@ -67,6 +67,7 @@ public partial class App : Application
         services.AddSingleton<AppNotificationService>();
         services.AddSingleton<WindowsToastService>();
         services.AddSingleton<AppMessageBoxService>();
+        services.AddSingleton<FileExplorerPickerService>();
         services.AddSingleton<AppSettingsService>();
         services.AddSingleton<DebugLogService>();
         services.AddSingleton<GameLibraryService>();
@@ -81,11 +82,14 @@ public partial class App : Application
         services.AddSingleton<ShortcutService>();
         services.AddSingleton<CoverArtCache>();
         services.AddSingleton<AppUpdateService>();
+        services.AddSingleton<EasyListBlocker>();
+        services.AddSingleton<PatchApplyService>();
 
         services.AddSingleton<SettingsViewModel>();
         services.AddSingleton<MainWindow>();
         services.AddSingleton<LibraryPage>();
         services.AddSingleton<DownloadsPage>();
+        services.AddSingleton<PatchPage>();
         services.AddSingleton<DebugConsolePage>();
         services.AddSingleton<SettingsPage>();
 

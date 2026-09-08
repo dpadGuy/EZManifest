@@ -1019,7 +1019,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
     private async Task FillListIconsAsync(int version)
     {
         var missing = AppsList
-            .Where(game => !game.HasIcon && !string.IsNullOrWhiteSpace(game.AppId))
+            .Where(game => !string.IsNullOrWhiteSpace(game.AppId))
             .ToList();
         if (missing.Count == 0)
             return;
@@ -1051,6 +1051,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                         if (version != _loadVersion)
                             return;
 
+                        _coverArtCache.Remove(iconPath);
                         game.RefreshArtworkFlags();
                         RefreshListIcon(game);
                     });
@@ -1384,10 +1385,11 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         else
         {
             bool isInstalled = game.IsInstalled;
-            flyout.Items.Add(CreateMenuItem("Open install location", game, OpenInstallLocationMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Create desktop shortcut", game, CreateDesktopShortcutMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Change default executable", game, ChangeDefaultExecutableMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Custom launch options", game, CustomLaunchOptionsMenuItem_Click, isInstalled));
+            flyout.Items.Add(CreateMenuItem("Open install location", game, OpenInstallLocationMenuItem_Click, isInstalled));
+            flyout.Items.Add(new MenuFlyoutSeparator());
             flyout.Items.Add(CreateMenuItem("Remove Steam DRM", game, RemoveSteamDrmMenuItem_Click, isInstalled));
             flyout.Items.Add(new MenuFlyoutSeparator());
             flyout.Items.Add(CreateMenuItem("Visit store page", game, VisitStorePageMenuItem_Click));
@@ -1757,7 +1759,10 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
         try
         {
-            string computed = await _installPathService.GetInstallDirectoryAsync(game.Name, game.AppId);
+            string computed = await _installPathService.GetInstallDirectoryAsync(
+                game.Name,
+                game.AppId,
+                promptIfMissing: false);
             return Path.GetFullPath(computed);
         }
         catch

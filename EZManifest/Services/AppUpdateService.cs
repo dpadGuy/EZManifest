@@ -35,10 +35,45 @@ public sealed class AppUpdateService
 
     public async Task<AppUpdateInfo?> CheckForUpdateAsync(CancellationToken cancellationToken = default)
     {
-        string latestUrl = $"https://api.github.com/repos/{GitHubOwner}/{GitHubRepo}/releases/latest";
-        AppLog.Write($"[Update] Checking {GitHubOwner}/{GitHubRepo} latest tag. Local {FormatVersion(CurrentVersion)}");
+        AppLog.Write($"[Update] Checking {GitHubOwner}/{GitHubRepo} releases. Local {FormatVersion(CurrentVersion)}");
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, latestUrl);
+        JsonArray? releases = await FetchReleasesAsync(cancellationToken);
+        if (releases is null || releases.Count == 0)
+            return null;
+
+        AppUpdateInfo? best = null;
+        foreach (JsonNode? node in releases)
+        {
+            if (node is not JsonObject release)
+                continue;
+
+            if (!TryReadUpdate(release, out AppUpdateInfo? candidate) || candidate is null)
+                continue;
+
+            if (candidate.Version <= CurrentVersion)
+            {
+                AppLog.Write($"[Update] Skipping {candidate.TagName} ({candidate.Version}) — not newer than local");
+                continue;
+            }
+
+            if (best is null || candidate.Version > best.Version)
+                best = candidate;
+        }
+
+        if (best is null)
+        {
+            AppLog.Write($"[Update] Up to date. Local {CurrentVersion}");
+            return null;
+        }
+
+        AppLog.Write($"[Update] Offering {best.TagName} ({best.Version}) hotfix={best.IsHotfix}");
+        return best;
+    }
+
+    private async Task<JsonArray?> FetchReleasesAsync(CancellationToken cancellationToken)
+    {
+        string listUrl = $"https://api.github.com/repos/{GitHubOwner}/{GitHubRepo}/releases?per_page=30";
+        using var request = new HttpRequestMessage(HttpMethod.Get, listUrl);
         request.Headers.UserAgent.Add(new ProductInfoHeaderValue("EZManifest", CurrentVersion.ToString()));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
@@ -46,57 +81,62 @@ public sealed class AppUpdateService
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            AppLog.Write($"[Update] GitHub latest release returned {(int)response.StatusCode} {response.ReasonPhrase}");
+            AppLog.Write($"[Update] GitHub releases returned {(int)response.StatusCode} {response.ReasonPhrase}");
             response.EnsureSuccessStatusCode();
         }
 
         string json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var root = JsonNode.Parse(json);
-        if (root is null)
-            return null;
+        return JsonNode.Parse(json) as JsonArray;
+    }
 
-        if (root["prerelease"]?.GetValue<bool>() == true)
+    private static bool TryReadUpdate(JsonObject release, out AppUpdateInfo? update)
+    {
+        update = null;
+        if (release["draft"]?.GetValue<bool>() == true)
+            return false;
+
+        string? tag = release["tag_name"]?.ToString();
+        string? name = release["name"]?.ToString();
+        bool githubPrerelease = release["prerelease"]?.GetValue<bool>() == true;
+
+        if (IsIgnoredChannel(tag) || IsIgnoredChannel(name))
         {
-            AppLog.Write("[Update] Latest GitHub release is marked pre-release; skipping");
-            return null;
+            AppLog.Write($"[Update] Ignoring channel tag '{tag}'");
+            return false;
         }
 
-        string? tag = root["tag_name"]?.ToString();
-        if (IsPreReleaseTag(tag))
+        bool hotfix = IsHotfixRelease(tag, name);
+        if (githubPrerelease && !hotfix)
         {
-            AppLog.Write($"[Update] Ignoring pre-release tag '{tag}'");
-            return null;
+            AppLog.Write($"[Update] Ignoring pre-release '{tag}'");
+            return false;
         }
 
-        if (!TryParseVersion(tag, out Version remote))
+        if (!TryParseReleaseVersion(tag, hotfix, out Version remote, out int hotfixNumber, out bool parsedHotfix))
         {
             AppLog.Write($"[Update] Could not parse release tag '{tag}'");
-            return null;
+            return false;
         }
 
-        AppLog.Write($"[Update] Latest tag {tag} ({remote})");
-        if (remote <= CurrentVersion)
-        {
-            AppLog.Write($"[Update] Up to date. Local {CurrentVersion}, remote {remote}");
-            return null;
-        }
-
-        if (!TryFindInstaller(root["assets"] as JsonArray, out Uri? downloadUri, out string fileName) ||
+        if (!TryFindInstaller(release["assets"] as JsonArray, out Uri? downloadUri, out string fileName) ||
             downloadUri is null)
         {
-            AppLog.Write("[Update] Latest release has no EZManifest-Setup*.exe asset");
-            return null;
+            AppLog.Write($"[Update] Release '{tag}' has no EZManifest-Setup*.exe asset");
+            return false;
         }
 
-        return new AppUpdateInfo
+        update = new AppUpdateInfo
         {
             Version = remote,
             TagName = tag ?? remote.ToString(),
             DownloadUri = downloadUri,
             FileName = fileName,
-            ReleaseNotes = TrimNotes(root["body"]?.ToString()),
-            ReleasePageUri = TryCreateUri(root["html_url"]?.ToString())
+            ReleaseNotes = TrimNotes(release["body"]?.ToString()),
+            ReleasePageUri = TryCreateUri(release["html_url"]?.ToString()),
+            IsHotfix = hotfix || parsedHotfix,
+            HotfixNumber = hotfixNumber
         };
+        return true;
     }
 
     public async Task PromptIfAvailableAsync(bool silentWhenCurrent, CancellationToken cancellationToken = default)
@@ -363,7 +403,7 @@ public sealed class AppUpdateService
         var body = new StackPanel { Spacing = 16 };
         body.Children.Add(new TextBlock
         {
-            Text = $"EZManifest {FormatVersion(update.Version)} is available.\nWould you like to update ?",
+            Text = $"EZManifest {FormatUpdateLabel(update)} is available.\nWould you like to update ?",
             TextWrapping = TextWrapping.WrapWholeWords
         });
         body.Children.Add(buttons);
@@ -468,33 +508,144 @@ public sealed class AppUpdateService
         && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
         && name.Contains("Setup", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsPreReleaseTag(string? tag)
+    private static bool IsHotfixRelease(string? tag, string? name) =>
+        IsHotfixLabel(tag) || IsHotfixLabel(name);
+
+    private static bool IsHotfixLabel(string? value)
     {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        return value.Contains("hotfix", StringComparison.OrdinalIgnoreCase)
+            || HasHotfixSuffix(StripLeadingV(value));
+    }
+
+    private static bool HasHotfixSuffix(string text)
+    {
+        int dash = text.IndexOf('-');
+        if (dash < 0 || dash >= text.Length - 1)
+            return false;
+
+        return IsHotfixSuffix(text[(dash + 1)..]);
+    }
+
+    private static bool IsHotfixSuffix(string suffix) =>
+        TryReadHotfixNumber(suffix, out _);
+
+    private static bool TryReadHotfixNumber(string suffix, out int number)
+    {
+        number = 0;
+        suffix = suffix.Trim();
+        foreach (string prefix in new[] { "hotfix", "hf" })
+        {
+            if (!suffix.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string rest = suffix[prefix.Length..];
+            if (rest.Length == 0)
+            {
+                number = 1;
+                return true;
+            }
+
+            if (rest[0] is '.' or '-')
+                rest = rest[1..];
+
+            if (rest.Length == 0)
+            {
+                number = 1;
+                return true;
+            }
+
+            if (int.TryParse(rest, out int parsed) && parsed > 0)
+            {
+                number = parsed;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsIgnoredChannel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        return value.Contains("beta", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("alpha", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("preview", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("nightly", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("canary", StringComparison.OrdinalIgnoreCase)
+            || ContainsRcChannel(value);
+    }
+
+    private static bool ContainsRcChannel(string value)
+    {
+        int index = value.IndexOf("rc", StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+            return false;
+
+        bool startOk = index == 0 || !char.IsLetter(value[index - 1]);
+        int end = index + 2;
+        bool endOk = end >= value.Length || !char.IsLetter(value[end]);
+        return startOk && endOk;
+    }
+
+    private static bool TryParseReleaseVersion(
+        string? tag,
+        bool namedHotfix,
+        out Version version,
+        out int hotfixNumber,
+        out bool hotfix)
+    {
+        version = new Version(0, 0, 0, 0);
+        hotfixNumber = 0;
+        hotfix = false;
         if (string.IsNullOrWhiteSpace(tag))
             return false;
 
-        string text = tag.Trim();
-        if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase))
-            text = text[1..];
+        string text = StripLeadingV(tag.Trim());
+        int dash = text.IndexOf('-');
+        string core = dash < 0 ? text : text[..dash];
+        string suffix = dash < 0 ? string.Empty : text[(dash + 1)..];
 
-        return text.Contains('-', StringComparison.Ordinal);
+        if (!Version.TryParse(core, out Version? parsed))
+            return false;
+
+        parsed = Normalize(parsed);
+        if (string.IsNullOrEmpty(suffix))
+        {
+            if (!namedHotfix)
+            {
+                version = parsed;
+                return true;
+            }
+
+            hotfix = true;
+            hotfixNumber = 1;
+            version = new Version(parsed.Major, parsed.Minor, parsed.Build, 1);
+            return true;
+        }
+
+        if (!TryReadHotfixNumber(suffix, out hotfixNumber))
+            return false;
+
+        hotfix = true;
+        version = new Version(parsed.Major, parsed.Minor, parsed.Build, hotfixNumber);
+        return true;
     }
 
-    private static bool TryParseVersion(string? tag, out Version version)
+    private static string StripLeadingV(string text) =>
+        text.StartsWith("v", StringComparison.OrdinalIgnoreCase) ? text[1..] : text;
+
+    private static string FormatUpdateLabel(AppUpdateInfo update)
     {
-        version = new Version(0, 0, 0, 0);
-        if (string.IsNullOrWhiteSpace(tag) || IsPreReleaseTag(tag))
-            return false;
+        string core = $"{update.Version.Major}.{update.Version.Minor}.{update.Version.Build}";
+        if (!update.IsHotfix)
+            return core;
 
-        string text = tag.Trim();
-        if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase))
-            text = text[1..];
-
-        if (!Version.TryParse(text, out Version? parsed))
-            return false;
-
-        version = Normalize(parsed);
-        return true;
+        return update.HotfixNumber <= 1 ? $"{core} hotfix" : $"{core} hotfix {update.HotfixNumber}";
     }
 
     private static Version Normalize(Version version) =>

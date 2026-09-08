@@ -66,6 +66,33 @@ public sealed class CoverArtCache
         return bitmap;
     }
 
+    public void Remove(string? imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath))
+            return;
+
+        string path;
+        try
+        {
+            path = Path.GetFullPath(imagePath);
+        }
+        catch
+        {
+            return;
+        }
+
+        var stale = _map.Keys.Where(key =>
+                key.Equals(path, StringComparison.OrdinalIgnoreCase) ||
+                key.StartsWith(path + "|", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (string key in stale)
+        {
+            if (!_map.Remove(key, out var node))
+                continue;
+            _lru.Remove(node);
+        }
+    }
+
     private sealed class CacheEntry(string path, ImageSource source)
     {
         public string Path { get; } = path;

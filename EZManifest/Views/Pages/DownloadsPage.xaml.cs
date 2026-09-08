@@ -7,12 +7,13 @@ using EZManifest.Services;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.Web.WebView2.Core;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
-using Windows.Storage.Pickers;
-using WinRT.Interop;
 using RelayCommand = EZManifest.Commands.RelayCommand;
 
 namespace EZManifest.Views.Pages;
@@ -32,6 +33,7 @@ public sealed partial class DownloadsPage : Page
     private readonly WindowProvider _windowProvider;
     private readonly PostDownloadService _postDownloadService;
     private readonly WindowsToastService _windowsToast;
+    private readonly FileExplorerPickerService _filePicker;
 
     private string _finalPath = string.Empty;
     private string _appId = string.Empty;
@@ -46,6 +48,9 @@ public sealed partial class DownloadsPage : Page
     private string _installPathBeforeDownload = string.Empty;
     private DispatcherQueueTimer? _elapsedTimer;
     private readonly HashSet<string> _pendingInstallAppIds = new(StringComparer.OrdinalIgnoreCase);
+    private const string DepotBoxHomeUrl = "https://depotbox.org/";
+    private bool _depotBoxOpen;
+    private bool _depotBoxReady;
 
     public ObservableCollection<DownloadItem> Downloads { get; } = new();
     public event Action? InstallingChanged;
@@ -63,7 +68,8 @@ public sealed partial class DownloadsPage : Page
         AppSettingsService settingsService,
         WindowProvider windowProvider,
         PostDownloadService postDownloadService,
-        WindowsToastService windowsToast)
+        WindowsToastService windowsToast,
+        FileExplorerPickerService filePicker)
     {
         _notifications = notifications;
         _manifestParser = manifestParser;
@@ -78,6 +84,7 @@ public sealed partial class DownloadsPage : Page
         _windowProvider = windowProvider;
         _postDownloadService = postDownloadService;
         _windowsToast = windowsToast;
+        _filePicker = filePicker;
 
         InitializeComponent();
         Downloads.CollectionChanged += (_, _) =>
@@ -86,6 +93,33 @@ public sealed partial class DownloadsPage : Page
             InstallingChanged?.Invoke();
         };
         UpdateEmptyState();
+        _settingsService.ManifestSourceSettingsChanged += OnManifestSourceSettingsChanged;
+        Unloaded += (_, _) => ReleaseBrowser();
+        _ = RefreshManifestSourceButtonsAsync();
+    }
+
+    private void OnManifestSourceSettingsChanged() =>
+        DispatcherQueue.TryEnqueue(() => _ = RefreshManifestSourceButtonsAsync());
+
+    protected override void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        _ = RefreshManifestSourceButtonsAsync();
+    }
+
+    private async Task RefreshManifestSourceButtonsAsync()
+    {
+        try
+        {
+            var settings = await _settingsService.LoadAsync();
+            bool preferred = settings.UsePreferredManifestSource;
+            EmptySourceButton.Content = preferred ? "Use preferred source instead" : "Use DepotBox instead";
+            ActiveSourceButton.Content = preferred ? "Preferred source" : "DepotBox";
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Could not refresh manifest source buttons");
+        }
     }
 
     private XamlRoot ResolveDialogXamlRoot()
@@ -109,7 +143,16 @@ public sealed partial class DownloadsPage : Page
 
     private void UpdateEmptyState()
     {
+        if (_depotBoxOpen)
+        {
+            DownloadsRoot.Visibility = Visibility.Collapsed;
+            DepotBoxPanel.Visibility = Visibility.Visible;
+            return;
+        }
+
         bool empty = Downloads.Count == 0;
+        DepotBoxPanel.Visibility = Visibility.Collapsed;
+        DownloadsRoot.Visibility = Visibility.Visible;
         EmptyDropPrompt.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
         BrowseActivePanel.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
     }
@@ -136,30 +179,461 @@ public sealed partial class DownloadsPage : Page
         if (paths.Count == 0)
             return;
 
-        // Win32 folder dialog steals activation; ContentDialog needs the UI thread to settle first.
-        await WaitForUiIdleAsync();
-
-        await ImportPathsWithActionChoiceAsync(paths);
+        await ImportAndDownloadAsync(paths);
     }
 
-    private Task WaitForUiIdleAsync()
+    private async void UseDepotBox_Click(object sender, RoutedEventArgs e)
     {
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!DispatcherQueue.TryEnqueue(() => tcs.TrySetResult()))
-            tcs.TrySetResult();
-        return tcs.Task;
+        (bool preferred, string url) = await _settingsService.GetManifestSourceAsync();
+        if (preferred && !AppSettingsService.TryNormalizeHttpUrl(url, out _))
+        {
+            await _messageBoxService.ShowAsync(
+                "Preferred source missing",
+                "Turn on Preferred source in Settings and Apply a website address.");
+            return;
+        }
+
+        _depotBoxOpen = true;
+        UpdateEmptyState();
+        await EnsureDepotBoxReadyAsync();
+        if (_depotBoxReady)
+            DepotBoxBrowser.Source = new Uri(url);
+        UpdateDepotBoxChrome();
+        if (!preferred)
+            await ShowDepotBoxGuideIfNeededAsync();
+    }
+
+    private async Task ShowDepotBoxGuideIfNeededAsync()
+    {
+        try
+        {
+            var settings = await _settingsService.LoadAsync();
+            if (settings.HasSeenDepotBoxGuide)
+                return;
+
+            await ShowDepotBoxGuideAsync();
+            await _settingsService.UpdateAsync(s => s.HasSeenDepotBoxGuide = true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "DepotBox first-time guide failed");
+        }
+    }
+
+    private async Task ShowDepotBoxGuideAsync()
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "How to use DepotBox",
+            Content = new TextBlock
+            {
+                Text =
+                    "1. Search for your game using the search function. You can search by name or paste the game's App ID\n" +
+                    "2. Press the \"Download .zip\" button\n" +
+                    "3. Wait for the download\n" +
+                    "4. Proceed with the prompts you get after that",
+                TextWrapping = TextWrapping.WrapWholeWords
+            },
+            PrimaryButtonText = "OK",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme
+        };
+        dialog.Resources["ContentDialogMinHeight"] = 0.0;
+        dialog.Resources["ContentDialogMinWidth"] = 320.0;
+
+        await dialog.ShowAsync();
+    }
+
+    private async Task EnsureDepotBoxReadyAsync()
+    {
+        if (_depotBoxReady)
+            return;
+
+        try
+        {
+            string userData = Path.Combine(AppPaths.DataDirectory, "WebView2");
+            Directory.CreateDirectory(userData);
+            Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", userData);
+            await DepotBoxBrowser.EnsureCoreWebView2Async();
+            DepotBoxBrowser.CoreWebView2.Settings.AreHostObjectsAllowed = false;
+            DepotBoxBrowser.CoreWebView2.Settings.IsReputationCheckingRequired = false;
+
+            DepotBoxBrowser.NavigationStarting += (_, args) =>
+            {
+                if (!string.IsNullOrWhiteSpace(args.Uri))
+                    DepotBoxAddressBox.Text = args.Uri;
+            };
+            DepotBoxBrowser.NavigationCompleted += (_, _) => UpdateDepotBoxChrome();
+            DepotBoxBrowser.CoreWebView2.HistoryChanged += (_, _) => UpdateDepotBoxChrome();
+            DepotBoxBrowser.CoreWebView2.SourceChanged += (_, _) =>
+            {
+                string source = DepotBoxBrowser.CoreWebView2.Source;
+                if (!string.IsNullOrWhiteSpace(source))
+                    DepotBoxAddressBox.Text = source;
+            };
+            DepotBoxBrowser.CoreWebView2.NewWindowRequested += (_, args) =>
+            {
+                args.Handled = true;
+                string uri = args.Uri ?? string.Empty;
+                if (Uri.TryCreate(uri, UriKind.Absolute, out Uri? target) &&
+                    (target.Scheme == Uri.UriSchemeHttps || target.Scheme == Uri.UriSchemeHttp))
+                {
+                    DepotBoxBrowser.CoreWebView2.Navigate(uri);
+                }
+            };
+            DepotBoxBrowser.CoreWebView2.DownloadStarting += DepotBox_DownloadStarting;
+
+            DepotBoxAddressBox.Text = DepotBoxHomeUrl;
+            _depotBoxReady = true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "DepotBox browser failed to start");
+            _depotBoxOpen = false;
+            UpdateEmptyState();
+            await _messageBoxService.ShowAsync(
+                "Browser unavailable",
+                "Install the Microsoft Edge WebView2 Runtime to use DepotBox.\n\n" + ex.Message);
+        }
+    }
+
+    private void DepotBoxBack_Click(object sender, RoutedEventArgs e)
+    {
+        if (DepotBoxBrowser.CanGoBack)
+            DepotBoxBrowser.GoBack();
+    }
+
+    private void DepotBoxForward_Click(object sender, RoutedEventArgs e)
+    {
+        if (DepotBoxBrowser.CanGoForward)
+            DepotBoxBrowser.GoForward();
+    }
+
+    private void DepotBoxClose_Click(object sender, RoutedEventArgs e)
+    {
+        ReleaseBrowser();
+    }
+
+    public void ReleaseBrowser()
+    {
+        if (!_depotBoxReady && DepotBoxBrowser.CoreWebView2 is null)
+        {
+            _depotBoxOpen = false;
+            UpdateEmptyState();
+            return;
+        }
+
+        bool hadBrowser = true;
+        try
+        {
+            DepotBoxBrowser.CoreWebView2?.Stop();
+            DepotBoxBrowser.Close();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Downloads] Browser close: {ex.Message}");
+        }
+
+        DepotBoxBrowserHost.Children.Clear();
+        DepotBoxBrowser = new WebView2
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+        DepotBoxBrowserHost.Children.Add(DepotBoxBrowser);
+        _depotBoxReady = false;
+        _depotBoxOpen = false;
+        DepotBoxAddressBox.Text = string.Empty;
+        UpdateEmptyState();
+        if (hadBrowser)
+            AppLog.Write("[Downloads] WebView released");
+    }
+
+    private void DepotBoxGo_Click(object sender, RoutedEventArgs e) => NavigateDepotBoxAddress();
+
+    private void DepotBoxAddressBox_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == Windows.System.VirtualKey.Enter)
+        {
+            e.Handled = true;
+            NavigateDepotBoxAddress();
+        }
+    }
+
+    private void NavigateDepotBoxAddress()
+    {
+        if (!_depotBoxReady)
+            return;
+
+        string text = DepotBoxAddressBox.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        if (!text.Contains("://", StringComparison.Ordinal))
+            text = "https://" + text;
+
+        if (!Uri.TryCreate(text, UriKind.Absolute, out Uri? uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        {
+            return;
+        }
+
+        DepotBoxBrowser.Source = uri;
+    }
+
+    private void UpdateDepotBoxChrome()
+    {
+        DepotBoxBackButton.IsEnabled = DepotBoxBrowser.CanGoBack;
+        DepotBoxForwardButton.IsEnabled = DepotBoxBrowser.CanGoForward;
+        if (DepotBoxBrowser.Source is not null)
+            DepotBoxAddressBox.Text = DepotBoxBrowser.Source.ToString();
+    }
+
+    private void DepotBox_DownloadStarting(CoreWebView2 sender, CoreWebView2DownloadStartingEventArgs args)
+    {
+        if (!IsZipDownload(args))
+            return;
+
+        string folder = Path.Combine(AppPaths.DataDirectory, "DepotBoxDownloads");
+        Directory.CreateDirectory(folder);
+
+        string suggested = Path.GetFileName(args.ResultFilePath);
+        if (string.IsNullOrWhiteSpace(suggested))
+            suggested = "manifest.zip";
+        suggested = SanitizeDepotBoxFileName(suggested);
+        if (suggested.EndsWith("!zip", StringComparison.OrdinalIgnoreCase))
+            suggested = suggested[..^4] + ".zip";
+        if (!suggested.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            suggested += ".zip";
+
+        string dest = Path.Combine(folder, suggested);
+        if (File.Exists(dest))
+        {
+            dest = Path.Combine(
+                folder,
+                $"{Path.GetFileNameWithoutExtension(suggested)}_{DateTime.UtcNow:yyyyMMddHHmmssfff}.zip");
+        }
+
+        args.ResultFilePath = dest;
+        args.Handled = true;
+        CoreWebView2DownloadOperation download = args.DownloadOperation;
+        DispatcherQueue.TryEnqueue(() => _ = TrackDepotBoxDownloadAsync(download, dest));
+        AppLog.Write($"[Downloads] DepotBox zip → {dest}");
+    }
+
+    private async Task TrackDepotBoxDownloadAsync(CoreWebView2DownloadOperation download, string path)
+    {
+        string fileName = Path.GetFileName(path);
+        var statusText = new TextBlock
+        {
+            Text = $"Downloading {fileName}…",
+            TextWrapping = TextWrapping.WrapWholeWords
+        };
+        var detailText = new TextBlock
+        {
+            Text = "Starting…",
+            FontSize = 12
+        };
+        if (Application.Current.Resources.TryGetValue("TextFillColorSecondaryBrush", out object? secondary) &&
+            secondary is Brush brush)
+        {
+            detailText.Foreground = brush;
+        }
+
+        var progressBar = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Value = 0,
+            Height = 8,
+            IsIndeterminate = true
+        };
+        var content = new StackPanel { Spacing = 12 };
+        content.Children.Add(statusText);
+        content.Children.Add(progressBar);
+        content.Children.Add(detailText);
+
+        var dialog = new ContentDialog
+        {
+            Title = "Downloading manifest",
+            Content = content,
+            CloseButtonText = "Cancel",
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme
+        };
+        dialog.Resources["ContentDialogMinHeight"] = 0.0;
+        dialog.Resources["ContentDialogMinWidth"] = 420.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 560.0;
+
+        var finished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool allowClose = false;
+
+        void UpdateProgress()
+        {
+            long received = (long)download.BytesReceived;
+            long total = (long)download.TotalBytesToReceive;
+            if (total > 0)
+            {
+                progressBar.IsIndeterminate = false;
+                progressBar.Value = Math.Clamp(received * 100.0 / total, 0, 100);
+                detailText.Text = $"{AppLog.FormatBytes(received)} / {AppLog.FormatBytes(total)}";
+            }
+            else
+            {
+                progressBar.IsIndeterminate = true;
+                detailText.Text = AppLog.FormatBytes(received);
+            }
+        }
+
+        void OnBytesReceived(CoreWebView2DownloadOperation sender, object args) =>
+            DispatcherQueue.TryEnqueue(UpdateProgress);
+
+        void OnStateChanged(CoreWebView2DownloadOperation sender, object args)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (sender.State == CoreWebView2DownloadState.InProgress)
+                {
+                    UpdateProgress();
+                    return;
+                }
+
+                bool ok = sender.State == CoreWebView2DownloadState.Completed ||
+                          IsUsableDepotBoxZip(path, sender.InterruptReason);
+                if (!ok)
+                {
+                    AppLog.Write(
+                        $"[Downloads] DepotBox download {sender.State} interrupt={sender.InterruptReason} file={path}");
+                }
+
+                finished.TrySetResult(ok);
+            });
+        }
+
+        download.BytesReceivedChanged += OnBytesReceived;
+        download.StateChanged += OnStateChanged;
+        if (download.State != CoreWebView2DownloadState.InProgress)
+            OnStateChanged(download, EventArgs.Empty);
+        dialog.Closing += (_, args) =>
+        {
+            if (allowClose)
+                return;
+
+            args.Cancel = true;
+            try
+            {
+                download.Cancel();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write(ex, "DepotBox download cancel failed");
+            }
+        };
+
+        UpdateProgress();
+        var showTask = dialog.ShowAsync().AsTask();
+        bool succeeded;
+        try
+        {
+            succeeded = await finished.Task;
+        }
+        finally
+        {
+            download.BytesReceivedChanged -= OnBytesReceived;
+            download.StateChanged -= OnStateChanged;
+            allowClose = true;
+            try
+            {
+                dialog.Hide();
+                await showTask;
+            }
+            catch
+            {
+            }
+        }
+
+        if (!succeeded)
+        {
+            await _messageBoxService.ShowAsync(
+                "Download cancelled",
+                $"The manifest download did not finish.\n{fileName}");
+            PatchApplyService.TryDeleteFile(path);
+            return;
+        }
+
+        PatchApplyService.UnblockFile(path);
+        await ImportDepotBoxZipAsync(path);
+    }
+
+    private static bool IsUsableDepotBoxZip(string path, CoreWebView2DownloadInterruptReason reason)
+    {
+        if (!File.Exists(path) || new FileInfo(path).Length == 0)
+            return false;
+        if (!path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return reason is CoreWebView2DownloadInterruptReason.None
+            or CoreWebView2DownloadInterruptReason.FileMalicious
+            or CoreWebView2DownloadInterruptReason.FileSecurityCheckFailed
+            or CoreWebView2DownloadInterruptReason.FileBlockedByPolicy;
+    }
+
+    private async Task ImportDepotBoxZipAsync(string path)
+    {
+        _depotBoxOpen = false;
+        UpdateEmptyState();
+
+        try
+        {
+            await ImportAndDownloadAsync(new[] { path });
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write(ex, $"Could not delete DepotBox zip {path}");
+            }
+        }
+    }
+
+    private static bool IsZipDownload(CoreWebView2DownloadStartingEventArgs args)
+    {
+        string name = Path.GetFileName(args.ResultFilePath ?? string.Empty);
+        string uri = args.DownloadOperation.Uri ?? string.Empty;
+        if (name.EndsWith(".lua", StringComparison.OrdinalIgnoreCase) ||
+            uri.Contains(".lua", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith("!zip", StringComparison.OrdinalIgnoreCase) ||
+            uri.Contains(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return Uri.TryCreate(uri, UriKind.Absolute, out Uri? parsed) &&
+               parsed.Host.Contains("depotbox", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SanitizeDepotBoxFileName(string name)
+    {
+        foreach (char c in Path.GetInvalidFileNameChars())
+            name = name.Replace(c, '_');
+        return string.IsNullOrWhiteSpace(name) ? "manifest.zip" : name;
     }
 
     private enum ManifestPickKind
     {
         Zip,
         Folder
-    }
-
-    private enum ManifestImportAction
-    {
-        Download,
-        AddToLibrary
     }
 
     private async Task<ManifestPickKind?> PromptZipOrFolderAsync(string title, string message)
@@ -191,218 +665,23 @@ public sealed partial class DownloadsPage : Page
         };
     }
 
-    private async Task<ManifestImportAction?> PromptDownloadOrLibraryAsync(IReadOnlyList<string> paths)
+    private async Task ImportAndDownloadAsync(IReadOnlyList<string> paths)
     {
-        string subject = paths.Count == 1
-            ? $"\"{GetManifestDisplayName(paths[0])}\""
-            : $"{paths.Count} items";
-
-        var dialog = new ContentDialog
-        {
-            Title = "Import manifests",
-            Content = new TextBlock
-            {
-                Text =
-                    $"Would you like to add {subject} to the library, or download immediately?",
-                TextWrapping = TextWrapping.WrapWholeWords
-            },
-            PrimaryButtonText = "Download",
-            SecondaryButtonText = "Add to library",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = ResolveDialogXamlRoot(),
-            RequestedTheme = ResolveDialogTheme()
-        };
-        dialog.Resources["ContentDialogMinWidth"] = 380.0;
-        dialog.Resources["ContentDialogMaxWidth"] = 560.0;
-
-        var result = await dialog.ShowAsync();
-        return result switch
-        {
-            ContentDialogResult.Primary => ManifestImportAction.Download,
-            ContentDialogResult.Secondary => ManifestImportAction.AddToLibrary,
-            _ => null
-        };
-    }
-
-    private async Task ImportPathsWithActionChoiceAsync(IReadOnlyList<string> paths)
-    {
-        if (paths.Count == 0)
-            return;
-
-        var action = await PromptDownloadOrLibraryAsync(paths);
-        if (action is null)
-            return;
-
-        if (action == ManifestImportAction.AddToLibrary)
-        {
-            await ImportManifestsToLibraryAsync(paths);
-            return;
-        }
-
-        // Download immediately — one depot-picker flow per item when several are selected.
         foreach (string path in paths)
             await ImportManifestAsync(path);
     }
 
     private async Task<IReadOnlyList<string>?> PickZipFilesAsync()
     {
-        var picker = new FileOpenPicker();
-        InitializeWithWindow.Initialize(picker, _windowProvider.GetWindowHandle());
-        picker.SuggestedStartLocation = PickerLocationId.Desktop;
-        picker.FileTypeFilter.Add(".zip");
-
-        IReadOnlyList<StorageFile> files = await picker.PickMultipleFilesAsync();
-        if (files is null || files.Count == 0)
-            return null;
-
-        return files
-            .Where(file => file.FileType.Equals(".zip", StringComparison.OrdinalIgnoreCase))
-            .Select(file => file.Path)
-            .ToList();
+        IReadOnlyList<string> files = await _filePicker.PickFilesAsync(
+            new[] { ".zip" },
+            "Select manifest zip files",
+            KnownExplorerFolders.Desktop);
+        return files.Count == 0 ? null : files;
     }
 
-    private Task<IReadOnlyList<string>> PickManifestFoldersAsync()
-    {
-        // WinUI FolderPicker is single-select only; native dialog supports Ctrl/Shift multi-select.
-        var folders = NativeFolderOpenDialog.PickFolders(_windowProvider.GetWindowHandle())
-            ?? Array.Empty<string>();
-        return Task.FromResult(folders);
-    }
-
-    private async Task ImportManifestsToLibraryAsync(IReadOnlyList<string> paths)
-    {
-        if (Interlocked.CompareExchange(ref _importBusy, 1, 0) != 0)
-        {
-            AppLog.Write("[Downloads] Library bulk import ignored (already in progress)");
-            return;
-        }
-
-        var statusText = new TextBlock
-        {
-            Text = "Preparing...",
-            TextWrapping = TextWrapping.WrapWholeWords
-        };
-        var progressBar = new ProgressBar
-        {
-            Minimum = 0,
-            Maximum = Math.Max(1, paths.Count),
-            Value = 0,
-            Height = 8
-        };
-        var content = new StackPanel { Spacing = 12 };
-        content.Children.Add(statusText);
-        content.Children.Add(progressBar);
-
-        var dialog = new ContentDialog
-        {
-            Title = "Adding to library",
-            Content = content,
-            XamlRoot = ResolveDialogXamlRoot(),
-            RequestedTheme = ResolveDialogTheme(),
-            CloseButtonText = "Please wait..."
-        };
-        dialog.Resources["ContentDialogMinWidth"] = 420.0;
-        dialog.Resources["ContentDialogMaxWidth"] = 560.0;
-
-        bool finished = false;
-        dialog.Closing += (_, args) =>
-        {
-            if (!finished)
-                args.Cancel = true;
-        };
-
-        var showTask = dialog.ShowAsync().AsTask();
-
-        int added = 0;
-        var failures = new List<string>();
-
-        try
-        {
-            for (int i = 0; i < paths.Count; i++)
-            {
-                string path = paths[i];
-                string displayName = GetManifestDisplayName(path);
-                statusText.Text = $"Adding {displayName}\n({i + 1} of {paths.Count})";
-
-                try
-                {
-                    await AddManifestToLibraryOnlyAsync(path);
-                    added++;
-                }
-                catch (Exception ex)
-                {
-                    AppLog.Write(ex, $"Library add failed for {path}");
-                    failures.Add($"{displayName}: {ex.Message}");
-                }
-
-                progressBar.Value = i + 1;
-            }
-
-            statusText.Text = failures.Count == 0
-                ? $"Added {added} game(s) to the library."
-                : $"Added {added} of {paths.Count}. {failures.Count} failed.";
-            if (failures.Count > 0 && failures.Count <= 5)
-                statusText.Text += "\n\n" + string.Join("\n", failures);
-
-            finished = true;
-            dialog.Hide();
-            await showTask;
-        }
-        catch (Exception ex)
-        {
-            AppLog.Write(ex, "Library bulk import failed");
-            finished = true;
-            try
-            {
-                dialog.Hide();
-            }
-            catch
-            {
-            }
-
-            _notifications.Show("Library import failed", ex.Message, InfoBarSeverity.Error);
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _importBusy, 0);
-            RefreshService.RequestRefresh();
-        }
-
-        if (added > 0)
-        {
-            _notifications.Show(
-                "Library updated",
-                failures.Count == 0
-                    ? $"Added {added} game(s)."
-                    : $"Added {added}; {failures.Count} failed.",
-                failures.Count == 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
-        }
-    }
-
-    private async Task AddManifestToLibraryOnlyAsync(string path)
-    {
-        AppLog.Write($"[Downloads] Library-only import: {path}");
-        var archive = await _archiveService.ExtractAsync(path);
-
-        if (IsAppCurrentlyDownloading(archive.AppId))
-            throw new InvalidOperationException($"App {archive.AppId} is already downloading.");
-
-        await _steamMetadata.DownloadArtworkAsync(archive.AppId, archive.LogoPath, archive.CoverArtPath, archive.HeroPath, archive.IconPath);
-        string gameName = await _steamMetadata.GetGameNameAsync(archive.AppId);
-
-        await _gameLibrary.UpsertAsync(new GameEntry
-        {
-            AppId = archive.AppId,
-            Name = gameName,
-            Image = archive.CoverArtPath,
-            StartLocation = string.Empty,
-            InstallPath = string.Empty,
-            IsInstalled = false
-        });
-
-        AppLog.Write($"[Downloads] Library-only upserted appId={archive.AppId} name='{gameName}'");
-    }
+    private Task<IReadOnlyList<string>> PickManifestFoldersAsync() =>
+        _filePicker.PickFoldersAsync("Select manifest folders", KnownExplorerFolders.Desktop);
 
     /// <summary>Called from Library when the user taps Install on a library-only title.</summary>
     public async Task BeginInstallFromLibraryAsync(GameEntry game)
@@ -441,7 +720,7 @@ public sealed partial class DownloadsPage : Page
         _installPathBeforeDownload = game.InstallPath ?? string.Empty;
 
         AppLog.Write($"[Downloads] Install from library appId={_appId} dir={_finalPath}");
-        await ManifestDepotIdChoiceAsync(luaPath, removeFromLibraryOnCancel: false);
+        await ManifestDepotIdChoiceAsync(luaPath);
     }
 
     private void ManifestDropZone_DragEnter(object sender, DragEventArgs e)
@@ -476,7 +755,7 @@ public sealed partial class DownloadsPage : Page
             return;
         }
 
-        await ImportPathsWithActionChoiceAsync(paths);
+        await ImportAndDownloadAsync(paths);
     }
 
     private void UpdateDropTarget(DragEventArgs e, bool highlight)
@@ -556,17 +835,6 @@ public sealed partial class DownloadsPage : Page
         return paths;
     }
 
-    private static string GetManifestDisplayName(string path)
-    {
-        if (Directory.Exists(path))
-        {
-            string name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            return string.IsNullOrWhiteSpace(name) ? path : name;
-        }
-
-        return Path.GetFileName(path);
-    }
-
     private async Task ImportManifestAsync(string path)
     {
         // Drop can bubble through Page/Grid/ScrollViewer/EmptyPrompt — only import once.
@@ -620,15 +888,17 @@ public sealed partial class DownloadsPage : Page
 
         await _steamMetadata.DownloadArtworkAsync(_appId, archive.LogoPath, archive.CoverArtPath, archive.HeroPath, archive.IconPath);
 
-        // If the title was already in the library, keep it there on cancel / depot dismiss.
         var existing = (await _gameLibrary.LoadAsync())
             .FirstOrDefault(g => string.Equals(g.AppId, _appId, StringComparison.OrdinalIgnoreCase));
-        bool alreadyInLibrary = existing is not null;
-        _preserveLibraryOnCancel = alreadyInLibrary;
         _wasInstalledBeforeDownload = existing?.IsInstalled ?? false;
         _installPathBeforeDownload = existing?.InstallPath ?? string.Empty;
+        _preserveLibraryOnCancel = true;
 
-        if (alreadyInLibrary)
+        if (existing is null)
+        {
+            await AddSteamGameToLibraryAsync(_appId, archive.CoverArtPath, isInstalled: false);
+        }
+        else
         {
             try
             {
@@ -642,19 +912,11 @@ public sealed partial class DownloadsPage : Page
             }
 
             AppLog.Write(
-                $"[Downloads] App {_appId} already in library — will preserve entry on cancel " +
+                $"[Downloads] App {_appId} already in library — keeping entry on cancel " +
                 $"(wasInstalled={_wasInstalledBeforeDownload})");
         }
-        else
-        {
-            _wasInstalledBeforeDownload = false;
-            _installPathBeforeDownload = string.Empty;
-            await AddSteamGameToLibraryAsync(_appId, archive.CoverArtPath, isInstalled: false);
-        }
 
-        await ManifestDepotIdChoiceAsync(
-            archive.LuaFilePath,
-            removeFromLibraryOnCancel: !alreadyInLibrary);
+        await ManifestDepotIdChoiceAsync(archive.LuaFilePath);
     }
 
     public bool HasActiveDownloads => Downloads.Count > 0;
@@ -681,41 +943,47 @@ public sealed partial class DownloadsPage : Page
 
     private async Task AddSteamGameToLibraryAsync(string appId, string coverArt, bool isInstalled)
     {
+        string gameName;
         try
         {
-            string gameName = await _steamMetadata.GetGameNameAsync(appId);
-            _currentGameName = string.IsNullOrWhiteSpace(gameName) ? $"Steam App {appId}" : gameName;
-            AppLog.Write($"[Downloads] Resolved game name appId={appId} → '{_currentGameName}'");
-            string installPath = isInstalled
-                ? await _installPathService.GetInstallDirectoryAsync(_currentGameName, appId)
-                : string.Empty;
-            await _gameLibrary.UpsertAsync(new GameEntry
-            {
-                AppId = appId,
-                Name = _currentGameName,
-                Image = coverArt,
-                StartLocation = string.Empty,
-                InstallPath = installPath,
-                IsInstalled = isInstalled
-            });
-
-            RefreshService.RequestRefresh();
-            _notifications.Show("Success", "Game added successfully!", InfoBarSeverity.Success);
-            AppLog.Write($"[Downloads] Library upserted installPath={installPath} isInstalled={isInstalled}");
+            gameName = await _steamMetadata.GetGameNameAsync(appId);
         }
         catch (Exception ex)
         {
-            AppLog.Write(ex, "AddSteamGameToLibrary failed");
+            AppLog.Write(ex, "Resolve game name failed");
+            gameName = string.Empty;
         }
+
+        _currentGameName = string.IsNullOrWhiteSpace(gameName) ? $"Steam App {appId}" : gameName;
+        AppLog.Write($"[Downloads] Resolved game name appId={appId} → '{_currentGameName}'");
+        string installPath = isInstalled
+            ? await _installPathService.GetInstallDirectoryAsync(
+                _currentGameName,
+                appId,
+                promptIfMissing: false)
+            : string.Empty;
+        await _gameLibrary.UpsertAsync(new GameEntry
+        {
+            AppId = appId,
+            Name = _currentGameName,
+            Image = coverArt,
+            StartLocation = string.Empty,
+            InstallPath = installPath,
+            IsInstalled = isInstalled
+        });
+
+        RefreshService.RequestRefresh();
+        _notifications.Show("Success", "Game added successfully!", InfoBarSeverity.Success);
+        AppLog.Write($"[Downloads] Library upserted installPath={installPath} isInstalled={isInstalled}");
     }
 
-    private async Task ManifestDepotIdChoiceAsync(string luaFilePath, bool removeFromLibraryOnCancel)
+    private async Task ManifestDepotIdChoiceAsync(string luaFilePath)
     {
         string appId = _appId;
         MarkPendingInstall(appId);
         try
         {
-            await ManifestDepotIdChoiceCoreAsync(luaFilePath, removeFromLibraryOnCancel);
+            await ManifestDepotIdChoiceCoreAsync(luaFilePath);
         }
         finally
         {
@@ -739,7 +1007,7 @@ public sealed partial class DownloadsPage : Page
         InstallingChanged?.Invoke();
     }
 
-    private async Task ManifestDepotIdChoiceCoreAsync(string luaFilePath, bool removeFromLibraryOnCancel)
+    private async Task ManifestDepotIdChoiceCoreAsync(string luaFilePath)
     {
         var availableItems = _manifestParser.Parse(luaFilePath);
         var depotIds = availableItems.Select(item => item.DepotId).ToList();
@@ -838,24 +1106,10 @@ public sealed partial class DownloadsPage : Page
             CreateDepotDialogHeader(executePostDownloadCheck));
 
         if (gamePick.Result != ContentDialogResult.Primary)
-        {
-            if (removeFromLibraryOnCancel)
-            {
-                await _gameLibrary.RemoveAsync(_appId);
-                RefreshService.RequestRefresh();
-            }
             return;
-        }
 
         if (gamePick.Selected.Count == 0 && dlcRows.Count == 0)
-        {
-            if (removeFromLibraryOnCancel)
-            {
-                await _gameLibrary.RemoveAsync(_appId);
-                RefreshService.RequestRefresh();
-            }
             return;
-        }
 
         var selectedItems = gamePick.Selected;
         if (dlcRows.Count > 0)
@@ -878,7 +1132,7 @@ public sealed partial class DownloadsPage : Page
                 "Select language",
                 "Optional. Leave none selected to skip extra languages.",
                 languageRows,
-                "Download Selected",
+                "Install Selected",
                 "Skip",
                 CreateDepotDialogHeader());
             if (languagePick.Result == ContentDialogResult.Primary)
@@ -886,14 +1140,7 @@ public sealed partial class DownloadsPage : Page
         }
 
         if (selectedItems.Count == 0)
-        {
-            if (removeFromLibraryOnCancel)
-            {
-                await _gameLibrary.RemoveAsync(_appId);
-                RefreshService.RequestRefresh();
-            }
             return;
-        }
 
         await StartDownloadProcessAsync(
             selectedItems,
@@ -902,7 +1149,7 @@ public sealed partial class DownloadsPage : Page
     }
 
     private static string NextOrDownload(bool hasMore) =>
-        hasMore ? "Next" : "Download Selected";
+        hasMore ? "Next" : "Install Selected";
 
     private static List<(DepotInfo Depot, DepotDisplayInfo Display)> RelabelLanguageAsGame(
         IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display)> languageRows)
@@ -1614,6 +1861,14 @@ public sealed partial class DownloadsPage : Page
             return;
         }
 
+        if (await _installPathService.TryEnsureDownloadRootAsync() is null)
+        {
+            await _messageBoxService.ShowAsync(
+                "Install location required",
+                "Choose a default install folder before downloading.");
+            return;
+        }
+
         if (!await HasEnoughDiskSpaceAsync(selectedDepots))
             return;
 
@@ -1753,7 +2008,10 @@ public sealed partial class DownloadsPage : Page
                             InfoBarSeverity.Warning));
                 }
 
-                downloadDest = await _installPathService.GetInstallDirectoryAsync(cancelledGameName, cancelledAppId);
+                downloadDest = await _installPathService.GetInstallDirectoryAsync(
+                    cancelledGameName,
+                    cancelledAppId,
+                    promptIfMissing: false);
                 Directory.CreateDirectory(downloadDest);
                 AppLog.Write($"[Downloads] Install directory: {downloadDest}");
                 await _gameLibrary.UpsertAsync(new GameEntry
@@ -1793,7 +2051,10 @@ public sealed partial class DownloadsPage : Page
                     IsInstalled = true
                 });
                 RequestLibraryRefresh();
-                await _windowsToast.NotifyInstallCompleteAsync(cancelledGameName);
+                await _windowsToast.NotifyInstallCompleteAsync(
+                    cancelledGameName,
+                    cancelledAppId,
+                    cancelledCoverArt);
 
                 if (executePostDownload)
                 {
@@ -1897,7 +2158,8 @@ public sealed partial class DownloadsPage : Page
                 {
                     installPath = await _installPathService.GetInstallDirectoryAsync(
                         gameName ?? string.Empty,
-                        appId);
+                        appId,
+                        promptIfMissing: false);
                 }
                 catch (Exception ex)
                 {
