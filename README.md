@@ -56,7 +56,7 @@ dotnet publish EZManifest\EZManifest.csproj -c Release -r win-x64 -p:Platform=x6
 Output:
 - `publish\EZManifest.exe` (self-contained single-file)
 - `publish\SteamAutoCrack.CLI\` (downloaded from the v3.5.0.7 release)
-- `installer\EZManifest-Setup-1.2.1.exe` (Inno Setup, if ISCC is installed)
+- `installer\EZManifest-Setup-1.2.1-hotfix1.exe` (Inno Setup, if ISCC is installed)
 
 The installer does not need admin. It defaults to `%LocalAppData%\Programs\EZManifest` (you can pick another folder) and leaves `%LocalAppData%\EZManifest` alone on uninstall.
 

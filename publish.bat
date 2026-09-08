@@ -6,7 +6,7 @@ set "PROJECT=%ROOT%EZManifest\EZManifest.csproj"
 set "OUT=%ROOT%publish"
 set "ISS=%ROOT%installer.iss"
 set "CLI_URL=https://github.com/dpadGuy/Steam-auto-crack/releases/download/3.5.0.7/SteamAutoCrack.CLI.zip"
-set "ZIPNAME=EZManifest-1.2.1.zip"
+set "ZIPNAME=EZManifest.zip"
 set "ISCC="
 set "BUILD_INSTALLER="
 
@@ -94,7 +94,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done: "%ROOT%installer\EZManifest-Setup-1.2.1.exe"
+echo Done: "%ROOT%installer\EZManifest-Setup-1.2.1-hotfix1.exe"
 echo Archive: "%OUT%\%ZIPNAME%"
 start "" explorer.exe "%ROOT%installer"
 endlocal

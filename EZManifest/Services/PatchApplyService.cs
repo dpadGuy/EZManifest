@@ -61,22 +61,40 @@ public sealed class PatchApplyService
         return dest;
     }
 
-    public static string? FindFilesFolder(string extractedRoot)
+    public static string? FindFilesFolder(string extractedRoot) =>
+        FindPatchSourceFolder(extractedRoot);
+
+    public static string? FindPatchSourceFolder(string extractedRoot)
     {
         if (!Directory.Exists(extractedRoot))
             return null;
 
-        string direct = Path.Combine(extractedRoot, "files");
-        if (Directory.Exists(direct))
-            return direct;
+        return ResolvePatchSource(Path.GetFullPath(extractedRoot));
+    }
 
-        foreach (string dir in Directory.EnumerateDirectories(extractedRoot, "files", SearchOption.AllDirectories))
+    private static string? ResolvePatchSource(string directory)
+    {
+        foreach (string dir in Directory.EnumerateDirectories(directory))
         {
             if (Path.GetFileName(dir).Equals("files", StringComparison.OrdinalIgnoreCase))
                 return dir;
         }
 
+        if (Directory.EnumerateFiles(directory).Any(IsExeOrDll))
+            return directory;
+
+        string[] subdirs = Directory.GetDirectories(directory);
+        if (subdirs.Length == 1)
+            return ResolvePatchSource(subdirs[0]);
+
         return null;
+    }
+
+    private static bool IsExeOrDll(string path)
+    {
+        string ext = Path.GetExtension(path);
+        return ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".dll", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<int> CopyFilesOverAsync(
@@ -88,7 +106,7 @@ public sealed class PatchApplyService
         filesFolder = Path.GetFullPath(filesFolder);
         gameFolder = Path.GetFullPath(gameFolder);
         if (!Directory.Exists(filesFolder))
-            throw new DirectoryNotFoundException("The archive has no files folder.");
+            throw new DirectoryNotFoundException("Incompatible game fix archive for EZManifest.");
         if (!Directory.Exists(gameFolder))
             throw new DirectoryNotFoundException($"Game folder was not found:\n{gameFolder}");
 

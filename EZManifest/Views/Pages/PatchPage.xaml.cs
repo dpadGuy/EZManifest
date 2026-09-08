@@ -492,7 +492,7 @@ public sealed partial class PatchPage : Page
 
             var confirm = await _messageBoxService.ShowAsync(
                 "Overwrite game files?",
-                $"Extract the archive, take the inner files folder, and copy it over:\n{gameFolder}\n\nExisting files with the same names will be overwritten.",
+                $"Extract the archive and copy the game fix files over:\n{gameFolder}\n\nExisting files with the same names will be overwritten.",
                 "Apply",
                 "Cancel");
             if (confirm != ContentDialogResult.Primary)
@@ -502,20 +502,20 @@ public sealed partial class PatchPage : Page
             await RunFixProgressAsync(async (progress, cancellationToken) =>
             {
                 extractDir = await _patchApply.ExtractArchiveAsync(archivePath, progress, cancellationToken);
-                string? filesFolder = PatchApplyService.FindFilesFolder(extractDir);
-                if (filesFolder is null)
+                string? sourceFolder = PatchApplyService.FindPatchSourceFolder(extractDir);
+                if (sourceFolder is null)
                 {
-                    throw new DirectoryNotFoundException(
-                        "The archive extracted, but no files folder was found.\nExpected something like:\nrune-doom.the.dark.ages.7z\\files");
+                    throw new InvalidOperationException(
+                        "Incompatible game fix archive for EZManifest.");
                 }
 
-                copied = await _patchApply.CopyFilesOverAsync(filesFolder, gameFolder, progress, cancellationToken);
+                copied = await _patchApply.CopyFilesOverAsync(sourceFolder, gameFolder, progress, cancellationToken);
             });
 
             AppLog.Write($"[Patch] Applied '{Path.GetFileName(archivePath)}' → {gameFolder} ({copied} file(s))");
             await _messageBoxService.ShowAsync(
                 "Game fix applied",
-                $"Copied {copied} file(s) from files into:\n{gameFolder}");
+                $"Copied {copied} file(s) into:\n{gameFolder}");
         }
         catch (OperationCanceledException)
         {
