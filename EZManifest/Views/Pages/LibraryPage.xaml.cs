@@ -1193,7 +1193,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             SelectOnlyListGame(game);
 
         SetSelectedGame(game);
-        Card_RightTapped(e.OriginalSource, e);
+        ShowGameContextMenu(game, e.OriginalSource as FrameworkElement, e.GetPosition(e.OriginalSource as UIElement));
         e.Handled = true;
     }
 
@@ -1254,12 +1254,24 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
     private async void ListDetailCheckUpdate_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedGame is null || !_selectedGame.IsInstalled)
+        if (_selectedGame is GameEntry game)
+            await BeginCheckForUpdatesAsync(game);
+    }
+
+    private async void CheckForUpdatesMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetGameEntry(sender) is GameEntry game)
+            await BeginCheckForUpdatesAsync(game);
+    }
+
+    private async Task BeginCheckForUpdatesAsync(GameEntry game)
+    {
+        if (!game.IsInstalled)
             return;
 
         _navigation.Navigate("Downloads");
         var downloads = _services.GetRequiredService<DownloadsPage>();
-        await downloads.BeginUpdateFromLibraryAsync(_selectedGame);
+        await downloads.BeginUpdateFromLibraryAsync(game);
     }
 
     private void ListDetailManage_Click(object sender, RoutedEventArgs e)
@@ -1458,11 +1470,11 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             _selectionAnchorIndex = IndexOfFiltered(game);
         }
 
-        ShowGameContextMenu(game, sender as FrameworkElement, e.GetPosition(sender as UIElement));
+        ShowGameContextMenu(game, sender as FrameworkElement, e.GetPosition(sender as UIElement), includeCheckForUpdates: true);
         e.Handled = true;
     }
 
-    private void ShowGameContextMenu(GameEntry game, FrameworkElement? target, Windows.Foundation.Point position)
+    private void ShowGameContextMenu(GameEntry game, FrameworkElement? target, Windows.Foundation.Point position, bool includeCheckForUpdates = false)
     {
         var flyout = new MenuFlyout();
 
@@ -1494,6 +1506,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             flyout.Items.Add(CreateMenuItem("Change default executable", game, ChangeDefaultExecutableMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Custom launch options", game, CustomLaunchOptionsMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Open install location", game, OpenInstallLocationMenuItem_Click, isInstalled));
+            if (includeCheckForUpdates)
+                flyout.Items.Add(CreateMenuItem("Check for updates", game, CheckForUpdatesMenuItem_Click, isInstalled));
             flyout.Items.Add(new MenuFlyoutSeparator());
             flyout.Items.Add(CreateMenuItem("Add game to Steam library", game, AddToSteamMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Remove Steam DRM", game, RemoveSteamDrmMenuItem_Click, isInstalled));
