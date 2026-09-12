@@ -320,6 +320,29 @@ public sealed class SteamMetadataService
         return null;
     }
 
+    private static async Task<int> GetImageWidthAsync(string? path, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path) || new FileInfo(path).Length == 0)
+            return 0;
+
+        try
+        {
+            StorageFile file = await StorageFile.GetFileFromPathAsync(path);
+            using var stream = await file.OpenReadAsync();
+            BitmapDecoder decoder = await BitmapDecoder.CreateAsync(stream);
+            cancellationToken.ThrowIfCancellationRequested();
+            return (int)decoder.PixelWidth;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     private static async Task<bool> IsSquareIconAsync(string path, CancellationToken cancellationToken)
     {
         try
@@ -377,6 +400,47 @@ public sealed class SteamMetadataService
             common?["logo_small"]?.ToString());
     }
 
+    public async Task<bool> EnsureHighResHeroAsync(
+        string appId,
+        string heroPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (await GetImageWidthAsync(heroPath, cancellationToken) >= 1800)
+            return true;
+
+        TryDelete(heroPath);
+        return await DownloadHeroAsync(appId, heroPath, cancellationToken);
+    }
+
+    public async Task<bool> EnsureHighResPortraitAsync(
+        string appId,
+        string portraitPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || string.IsNullOrWhiteSpace(portraitPath))
+            return false;
+
+        if (await GetImageWidthAsync(portraitPath, cancellationToken) >= 900)
+            return File.Exists(portraitPath);
+
+        string[] urls =
+        [
+            $"https://shared.steamstatic.com/store_item_assets/steam/apps/{appId}/library_600x900_2x.jpg",
+            $"https://shared.steamstatic.com/store_item_assets/steam/apps/{appId}/library_600x900.jpg",
+            $"https://cdn.cloudflare.steamstatic.com/steam/apps/{appId}/library_600x900_2x.jpg",
+            $"https://cdn.cloudflare.steamstatic.com/steam/apps/{appId}/library_600x900.jpg"
+        ];
+
+        TryDelete(portraitPath);
+        foreach (string url in urls)
+        {
+            if (await DownloadIfAvailableAsync(url, portraitPath, cancellationToken))
+                return true;
+        }
+
+        return false;
+    }
+
     public async Task<bool> DownloadHeroAsync(
         string appId,
         string heroPath,
@@ -385,7 +449,7 @@ public sealed class SteamMetadataService
         if (string.IsNullOrWhiteSpace(appId) || string.IsNullOrWhiteSpace(heroPath))
             return false;
 
-        if (File.Exists(heroPath) && new FileInfo(heroPath).Length > 0)
+        if (await GetImageWidthAsync(heroPath, cancellationToken) >= 1800)
             return true;
 
         string[] urls =
@@ -414,6 +478,72 @@ public sealed class SteamMetadataService
         return string.IsNullOrWhiteSpace(directory)
             ? null
             : Path.Combine(directory, "LibraryHero.jpg");
+    }
+
+    public static string? ResolveLogoPath(string? coverImagePath)
+    {
+        if (string.IsNullOrWhiteSpace(coverImagePath))
+            return null;
+
+        string? directory = Path.GetDirectoryName(coverImagePath);
+        return string.IsNullOrWhiteSpace(directory)
+            ? null
+            : Path.Combine(directory, "GameLogo.png");
+    }
+
+    public static string? ResolveHeaderPath(string? coverImagePath)
+    {
+        if (string.IsNullOrWhiteSpace(coverImagePath))
+            return null;
+
+        string? directory = Path.GetDirectoryName(coverImagePath);
+        return string.IsNullOrWhiteSpace(directory)
+            ? null
+            : Path.Combine(directory, "Header.jpg");
+    }
+
+    public async Task<bool> DownloadHeaderAsync(
+        string appId,
+        string headerPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || string.IsNullOrWhiteSpace(headerPath))
+            return false;
+
+        if (File.Exists(headerPath) && new FileInfo(headerPath).Length > 0)
+            return true;
+
+        string[] urls =
+        [
+            $"https://shared.steamstatic.com/store_item_assets/steam/apps/{appId}/header.jpg",
+            $"https://cdn.cloudflare.steamstatic.com/steam/apps/{appId}/header.jpg",
+            $"https://cdn.akamai.steamstatic.com/steam/apps/{appId}/header.jpg"
+        ];
+
+        foreach (string url in urls)
+        {
+            if (await DownloadIfAvailableAsync(url, headerPath, cancellationToken))
+                return true;
+        }
+
+        return false;
+    }
+
+    public async Task<bool> DownloadLogoAsync(
+        string appId,
+        string logoPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || string.IsNullOrWhiteSpace(logoPath))
+            return false;
+
+        if (File.Exists(logoPath) && new FileInfo(logoPath).Length > 0)
+            return true;
+
+        return await DownloadIfAvailableAsync(
+            $"https://shared.steamstatic.com/store_item_assets/steam/apps/{appId}/logo.png",
+            logoPath,
+            cancellationToken);
     }
 
     private async Task<bool> DownloadIfAvailableAsync(string url, string destination, CancellationToken cancellationToken)

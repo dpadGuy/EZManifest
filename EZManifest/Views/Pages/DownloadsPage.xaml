@@ -146,61 +146,100 @@
             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
             BorderThickness="2"
             CornerRadius="8">
-            <StackPanel
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                Spacing="10">
+            <Grid>
+                <StackPanel
+                    x:Name="UpdateModeBanner"
+                    Margin="32,10,32,0"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Spacing="6"
+                    Visibility="Collapsed">
+                    <TextBlock
+                        HorizontalAlignment="Center"
+                        FontSize="22"
+                        FontWeight="SemiBold"
+                        TextAlignment="Center"
+                        Text="Game Update Mode" />
+                    <TextBlock
+                        MaxWidth="660"
+                        HorizontalAlignment="Center"
+                        FontSize="13"
+                        TextAlignment="Center"
+                        TextWrapping="WrapWholeWords"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="Import your manifest by any means in order for EZManifest to check for latest update of the game." />
+                    <TextBlock
+                        x:Name="UpdateModeGameText"
+                        MaxWidth="560"
+                        HorizontalAlignment="Center"
+                        FontSize="13"
+                        FontWeight="SemiBold"
+                        TextAlignment="Center"
+                        TextWrapping="WrapWholeWords" />
+                    <Button
+                        HorizontalAlignment="Center"
+                        MinHeight="36"
+                        Margin="0,8,0,0"
+                        Padding="20,8"
+                        Content="Cancel update"
+                        Click="CancelUpdateMode_Click" />
+                </StackPanel>
                 <StackPanel
                     HorizontalAlignment="Center"
-                    Orientation="Horizontal"
-                    Spacing="16">
-                    <FontIcon
-                        FontFamily="Segoe Fluent Icons"
-                        Glyph="&#xF012;"
-                        FontSize="36"
-                        Opacity="0.85" />
-                    <FontIcon
-                        FontFamily="Segoe Fluent Icons"
-                        Glyph="&#xE8B7;"
-                        FontSize="36"
-                        Opacity="0.85" />
-                </StackPanel>
-                <StackPanel HorizontalAlignment="Center" Spacing="4">
-                    <Button
-                        HorizontalAlignment="Stretch"
-                        MinHeight="44"
-                        Padding="28,12"
-                        FontSize="15"
-                        Content="Browse manifests"
-                        Click="BrowseManifests_Click" />
+                    VerticalAlignment="Center"
+                    Spacing="10">
+                    <StackPanel
+                        HorizontalAlignment="Center"
+                        Orientation="Horizontal"
+                        Spacing="16">
+                        <FontIcon
+                            FontFamily="Segoe Fluent Icons"
+                            Glyph="&#xF012;"
+                            FontSize="36"
+                            Opacity="0.85" />
+                        <FontIcon
+                            FontFamily="Segoe Fluent Icons"
+                            Glyph="&#xE8B7;"
+                            FontSize="36"
+                            Opacity="0.85" />
+                    </StackPanel>
+                    <StackPanel HorizontalAlignment="Center" Spacing="4">
+                        <Button
+                            HorizontalAlignment="Stretch"
+                            MinHeight="44"
+                            Padding="28,12"
+                            FontSize="15"
+                            Content="Browse manifests"
+                            Click="BrowseManifests_Click" />
+                        <TextBlock
+                            HorizontalAlignment="Center"
+                            TextAlignment="Center"
+                            FontSize="12"
+                            TextWrapping="WrapWholeWords"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="Multiple .zip files or folders (picker or drag and drop)" />
+                        <Button
+                            x:Name="EmptySourceButton"
+                            HorizontalAlignment="Stretch"
+                            MinHeight="44"
+                            Margin="0,8,0,0"
+                            Padding="28,12"
+                            FontSize="15"
+                            Content="Use DepotBox instead"
+                            Click="UseDepotBox_Click" />
+                    </StackPanel>
                     <TextBlock
+                        x:Name="DropZoneHint"
+                        Margin="0,4,0,0"
                         HorizontalAlignment="Center"
                         TextAlignment="Center"
                         FontSize="12"
                         TextWrapping="WrapWholeWords"
+                        Visibility="Collapsed"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="Multiple .zip files or folders (picker or drag and drop)" />
-                    <Button
-                        x:Name="EmptySourceButton"
-                        HorizontalAlignment="Stretch"
-                        MinHeight="44"
-                        Margin="0,8,0,0"
-                        Padding="28,12"
-                        FontSize="15"
-                        Content="Use DepotBox instead"
-                        Click="UseDepotBox_Click" />
+                        Text="Drop .zip archives or folders here&#x0a;Each must contain a .lua file" />
                 </StackPanel>
-                <TextBlock
-                    x:Name="DropZoneHint"
-                    Margin="0,4,0,0"
-                    HorizontalAlignment="Center"
-                    TextAlignment="Center"
-                    FontSize="12"
-                    TextWrapping="WrapWholeWords"
-                    Visibility="Collapsed"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="Drop .zip archives or folders here&#x0a;Each must contain a .lua file" />
-            </StackPanel>
+            </Grid>
         </Border>
 
         <Border

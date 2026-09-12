@@ -58,6 +58,8 @@ public sealed class GameLibraryService
                 game.InstallSizeBytes = existing?.InstallSizeBytes;
             if (string.IsNullOrWhiteSpace(game.AboutTheGame))
                 game.AboutTheGame = existing?.AboutTheGame ?? string.Empty;
+            if (game.InstalledDepots is null)
+                game.InstalledDepots = existing?.InstalledDepots;
 
             games.Add(game);
             await WriteUnlockedAsync(games);

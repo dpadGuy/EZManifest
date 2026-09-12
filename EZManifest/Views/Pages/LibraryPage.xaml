@@ -500,6 +500,15 @@
                                 Spacing="8"
                                 VerticalAlignment="Center">
                                 <Button
+                                    Width="40"
+                                    Height="40"
+                                    Padding="0"
+                                    ToolTipService.ToolTip="Check for updates"
+                                    Visibility="{x:Bind SelectedGame.UpdateButtonVisibility, Mode=OneWay}"
+                                    Click="ListDetailCheckUpdate_Click">
+                                    <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE895;" FontSize="14" />
+                                </Button>
+                                <Button
                                     x:Name="ListDetailManageButton"
                                     Width="40"
                                     Height="40"

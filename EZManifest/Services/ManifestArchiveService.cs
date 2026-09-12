@@ -82,19 +82,19 @@ public sealed class ManifestArchiveService
             throw new FileNotFoundException("Manifest archive was not found.", zipPath);
 
         string archiveName = Path.GetFileNameWithoutExtension(zipPath);
-        string extractionDirectory = await PrepareExtractionDirectoryAsync(archiveName);
+        (string extractionDirectory, ArtworkStash stash) = await PrepareExtractionDirectoryAsync(archiveName);
 
         try
         {
             await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, extractionDirectory));
+            return BuildResult(extractionDirectory, "No .lua file found in the manifest archive.", stash);
         }
         catch
         {
+            stash.Dispose();
             TryDeleteDirectory(extractionDirectory);
             throw;
         }
-
-        return BuildResult(extractionDirectory, "No .lua file found in the manifest archive.");
     }
 
     private static async Task<ManifestArchiveResult> ImportFolderCoreAsync(string sourceFolder)
@@ -116,27 +116,28 @@ public sealed class ManifestArchiveService
         if (string.IsNullOrWhiteSpace(folderName))
             folderName = Path.GetFileNameWithoutExtension(luaSource);
 
-        string extractionDirectory = await PrepareExtractionDirectoryAsync(folderName);
+        (string extractionDirectory, ArtworkStash stash) = await PrepareExtractionDirectoryAsync(folderName);
 
         try
         {
             await Task.Run(() => CopyDirectory(contentRoot, extractionDirectory));
+            return BuildResult(extractionDirectory, "No .lua file found after importing the folder.", stash);
         }
         catch
         {
+            stash.Dispose();
             TryDeleteDirectory(extractionDirectory);
             throw;
         }
-
-        return BuildResult(extractionDirectory, "No .lua file found after importing the folder.");
     }
 
-    private static async Task<string> PrepareExtractionDirectoryAsync(string archiveName)
+    private static async Task<(string Directory, ArtworkStash Stash)> PrepareExtractionDirectoryAsync(string archiveName)
     {
         string manifestsRoot = AppPaths.ManifestsDirectory;
         Directory.CreateDirectory(manifestsRoot);
 
         string extractionDirectory = Path.Combine(manifestsRoot, archiveName);
+        ArtworkStash stash = ArtworkStash.Capture(extractionDirectory);
         if (Directory.Exists(extractionDirectory))
         {
             try
@@ -153,17 +154,24 @@ public sealed class ManifestArchiveService
         }
 
         Directory.CreateDirectory(extractionDirectory);
-        return extractionDirectory;
+        return (extractionDirectory, stash);
     }
 
-    private static ManifestArchiveResult BuildResult(string extractionDirectory, string missingLuaMessage)
+    private static ManifestArchiveResult BuildResult(
+        string extractionDirectory,
+        string missingLuaMessage,
+        ArtworkStash stash)
     {
         string? luaFile = Directory.GetFiles(extractionDirectory, "*.lua").FirstOrDefault();
         if (luaFile is null)
+        {
+            stash.Dispose();
             throw new InvalidDataException(missingLuaMessage);
+        }
 
         string assetsDirectory = Path.Combine(extractionDirectory, "Assets");
         Directory.CreateDirectory(assetsDirectory);
+        stash.RestoreInto(assetsDirectory);
 
         return new ManifestArchiveResult
         {
@@ -175,6 +183,82 @@ public sealed class ManifestArchiveService
             HeroPath = Path.Combine(assetsDirectory, "LibraryHero.jpg"),
             IconPath = Path.Combine(assetsDirectory, "GameIcon.jpg")
         };
+    }
+
+    private sealed class ArtworkStash : IDisposable
+    {
+        private static readonly string[] ArtworkNames =
+        [
+            "GameLogo.png",
+            "VerticalCoverArt.jpg",
+            "LibraryHero.jpg",
+            "GameIcon.jpg"
+        ];
+
+        private readonly string? _tempDirectory;
+
+        private ArtworkStash(string? tempDirectory) => _tempDirectory = tempDirectory;
+
+        public static ArtworkStash Capture(string extractionDirectory)
+        {
+            string assets = Path.Combine(extractionDirectory, "Assets");
+            if (!Directory.Exists(assets))
+                return new ArtworkStash(null);
+
+            string temp = Path.Combine(Path.GetTempPath(), "EZManifest", "ArtStash", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temp);
+            int copied = 0;
+            foreach (string name in ArtworkNames)
+            {
+                string source = Path.Combine(assets, name);
+                if (!File.Exists(source) || new FileInfo(source).Length == 0)
+                    continue;
+
+                File.Copy(source, Path.Combine(temp, name), overwrite: true);
+                copied++;
+            }
+
+            if (copied == 0)
+            {
+                TryDeleteDirectory(temp);
+                return new ArtworkStash(null);
+            }
+
+            AppLog.Write($"[ManifestArchive] Preserved {copied} artwork file(s) from '{assets}'");
+            return new ArtworkStash(temp);
+        }
+
+        public void RestoreInto(string assetsDirectory)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_tempDirectory) || !Directory.Exists(_tempDirectory))
+                    return;
+
+                Directory.CreateDirectory(assetsDirectory);
+                foreach (string name in ArtworkNames)
+                {
+                    string source = Path.Combine(_tempDirectory, name);
+                    string dest = Path.Combine(assetsDirectory, name);
+                    if (!File.Exists(source))
+                        continue;
+                    if (File.Exists(dest) && new FileInfo(dest).Length > 0)
+                        continue;
+
+                    File.Copy(source, dest, overwrite: true);
+                }
+            }
+            finally
+            {
+                Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            if (!string.IsNullOrWhiteSpace(_tempDirectory))
+                TryDeleteDirectory(_tempDirectory);
+        }
     }
 
     private static string? FindLuaInFolder(string root)

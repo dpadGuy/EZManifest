@@ -101,11 +101,52 @@
                     ToolTipService.ToolTip="Library filter">
                     <DropDownButton.Flyout>
                         <Flyout Placement="Bottom">
-                            <CheckBox
-                                x:Name="ShowDownloadedOnlyCheckBox"
-                                Content="Show downloaded only"
-                                Checked="ShowDownloadedOnlyCheckBox_Changed"
-                                Unchecked="ShowDownloadedOnlyCheckBox_Changed" />
+                            <StackPanel MinWidth="220" Spacing="8">
+                                <TextBlock
+                                    FontSize="11"
+                                    CharacterSpacing="40"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Text="SORT" />
+                                <RadioButton
+                                    x:Name="SortNameAscRadio"
+                                    GroupName="LibrarySort"
+                                    Tag="NameAsc"
+                                    Content="A to Z"
+                                    Checked="LibrarySortRadio_Checked" />
+                                <RadioButton
+                                    x:Name="SortNameDescRadio"
+                                    GroupName="LibrarySort"
+                                    Tag="NameDesc"
+                                    Content="Z to A"
+                                    Checked="LibrarySortRadio_Checked" />
+                                <RadioButton
+                                    x:Name="SortSizeDescRadio"
+                                    GroupName="LibrarySort"
+                                    Tag="SizeDesc"
+                                    Content="Biggest size"
+                                    Checked="LibrarySortRadio_Checked" />
+                                <RadioButton
+                                    x:Name="SortSizeAscRadio"
+                                    GroupName="LibrarySort"
+                                    Tag="SizeAsc"
+                                    Content="Smallest size"
+                                    Checked="LibrarySortRadio_Checked" />
+                                <RadioButton
+                                    x:Name="SortInstalledFirstRadio"
+                                    GroupName="LibrarySort"
+                                    Tag="InstalledFirst"
+                                    Content="Installed first"
+                                    Checked="LibrarySortRadio_Checked" />
+                                <Border
+                                    Height="1"
+                                    Margin="0,4"
+                                    Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <CheckBox
+                                    x:Name="ShowDownloadedOnlyCheckBox"
+                                    Content="Show downloaded only"
+                                    Checked="ShowDownloadedOnlyCheckBox_Changed"
+                                    Unchecked="ShowDownloadedOnlyCheckBox_Changed" />
+                            </StackPanel>
                         </Flyout>
                     </DropDownButton.Flyout>
                 </DropDownButton>

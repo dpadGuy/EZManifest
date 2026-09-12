@@ -14,6 +14,7 @@ public sealed partial class SettingsPage : Page
     private readonly FileExplorerPickerService _filePicker;
     private bool _suppressCdnSave;
     private bool _suppressNotifySave = true;
+    private bool _suppressShowAllDepotsSave = true;
     private bool _suppressUpdateSave = true;
     private bool _suppressPreferredSourceSave = true;
 
@@ -52,11 +53,13 @@ public sealed partial class SettingsPage : Page
             _suppressCdnSave = false;
 
             NotifyOnInstallToggle.IsOn = settings.NotifyOnInstallComplete;
+            ShowAllDepotIdsToggle.IsOn = settings.ShowAllDepotIds;
             CheckForUpdatesToggle.IsOn = settings.CheckForUpdatesOnStartup;
             PreferredSourceToggle.IsOn = settings.UsePreferredManifestSource;
             PreferredSourceTextBox.Text = settings.PreferredManifestSourceUrl;
             UpdatePreferredSourceInputs();
             _suppressNotifySave = false;
+            _suppressShowAllDepotsSave = false;
             _suppressUpdateSave = false;
             _suppressPreferredSourceSave = false;
         }
@@ -65,6 +68,7 @@ public sealed partial class SettingsPage : Page
             AppLog.Write(ex, "Error loading settings");
             _suppressCdnSave = false;
             _suppressNotifySave = false;
+            _suppressShowAllDepotsSave = false;
             _suppressUpdateSave = false;
             _suppressPreferredSourceSave = false;
         }
@@ -165,6 +169,23 @@ public sealed partial class SettingsPage : Page
         catch (Exception ex)
         {
             AppLog.Write(ex, "Failed to save CDN region");
+        }
+    }
+
+    private async void ShowAllDepotIdsToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowAllDepotsSave)
+            return;
+
+        bool enabled = ShowAllDepotIdsToggle.IsOn;
+        try
+        {
+            await _settingsService.UpdateAsync(settings => settings.ShowAllDepotIds = enabled);
+            AppLog.Write($"[Settings] Show all depot IDs {(enabled ? "enabled" : "disabled")}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save show-all-depots setting");
         }
     }
 

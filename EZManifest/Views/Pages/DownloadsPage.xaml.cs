@@ -45,7 +45,9 @@ public sealed partial class DownloadsPage : Page
     private int _importBusy;
     private bool _preserveLibraryOnCancel;
     private bool _wasInstalledBeforeDownload;
+    private bool _incrementalDownload;
     private string _installPathBeforeDownload = string.Empty;
+    private GameEntry? _pendingUpdateGame;
     private DispatcherQueueTimer? _elapsedTimer;
     private readonly HashSet<string> _pendingInstallAppIds = new(StringComparer.OrdinalIgnoreCase);
     private const string DepotBoxHomeUrl = "https://depotbox.org/";
@@ -96,6 +98,7 @@ public sealed partial class DownloadsPage : Page
         _settingsService.ManifestSourceSettingsChanged += OnManifestSourceSettingsChanged;
         Unloaded += (_, _) => ReleaseBrowser();
         _ = RefreshManifestSourceButtonsAsync();
+        RefreshUpdateModeHint();
     }
 
     private void OnManifestSourceSettingsChanged() =>
@@ -182,7 +185,10 @@ public sealed partial class DownloadsPage : Page
         await ImportAndDownloadAsync(paths);
     }
 
-    private async void UseDepotBox_Click(object sender, RoutedEventArgs e)
+    private async void UseDepotBox_Click(object sender, RoutedEventArgs e) =>
+        await OpenManifestSourceBrowserAsync();
+
+    private async Task OpenManifestSourceBrowserAsync()
     {
         (bool preferred, string url) = await _settingsService.GetManifestSourceAsync();
         if (preferred && !AppSettingsService.TryNormalizeHttpUrl(url, out _))
@@ -723,6 +729,261 @@ public sealed partial class DownloadsPage : Page
         await ManifestDepotIdChoiceAsync(luaPath);
     }
 
+    /// <summary>Library "Check for updates": next manifest from this page is applied as an update.</summary>
+    public async Task BeginUpdateFromLibraryAsync(GameEntry game)
+    {
+        if (game is null || string.IsNullOrWhiteSpace(game.AppId))
+            return;
+
+        if (!game.IsInstalled)
+        {
+            await _messageBoxService.ShowAsync(
+                "Game not installed",
+                "Install this game first, then check for updates.");
+            return;
+        }
+
+        if (IsAppCurrentlyDownloading(game.AppId))
+        {
+            await _messageBoxService.ShowAsync(
+                "Already downloading",
+                $"\"{game.Name}\" is currently in the download process.");
+            return;
+        }
+
+        _pendingUpdateGame = game;
+        RefreshUpdateModeHint();
+        AppLog.Write($"[Downloads] Waiting for update manifest '{game.Name}' appId={game.AppId}");
+    }
+
+    private void RefreshUpdateModeHint()
+    {
+        if (UpdateModeBanner is null)
+            return;
+
+        if (_pendingUpdateGame is GameEntry game)
+        {
+            UpdateModeBanner.Visibility = Visibility.Visible;
+            if (UpdateModeGameText is not null)
+                UpdateModeGameText.Text = $"Update process in progress for {game.Name}";
+        }
+        else
+        {
+            UpdateModeBanner.Visibility = Visibility.Collapsed;
+            if (UpdateModeGameText is not null)
+                UpdateModeGameText.Text = string.Empty;
+        }
+    }
+
+    private void CancelUpdateMode_Click(object sender, RoutedEventArgs e)
+    {
+        if (_pendingUpdateGame is null)
+            return;
+
+        AppLog.Write($"[Downloads] Update mode cancelled for '{_pendingUpdateGame.Name}' appId={_pendingUpdateGame.AppId}");
+        _pendingUpdateGame = null;
+        _incrementalDownload = false;
+        RefreshUpdateModeHint();
+        _notifications.Show(
+            "Update cancelled",
+            "Installs is back to normal. The next manifest will be imported as a new install.",
+            InfoBarSeverity.Informational);
+    }
+
+    private async Task<bool> ContinueUpdateFromManifestPathAsync(GameEntry game, string path)
+    {
+        AppLog.Write($"[Downloads] Update check '{game.Name}' appId={game.AppId} source={path}");
+
+        ManifestArchiveResult archive;
+        try
+        {
+            archive = await _archiveService.ExtractAsync(path);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Update manifest import failed");
+            await _messageBoxService.ShowAsync("Could not read manifest", ex.Message);
+            return false;
+        }
+
+        if (!string.Equals(archive.AppId, game.AppId, StringComparison.OrdinalIgnoreCase))
+        {
+            await _messageBoxService.ShowAsync(
+                "Wrong game",
+                $"That manifest is for App ID {archive.AppId}, not {game.Name} ({game.AppId}).");
+            return false;
+        }
+
+        await RestoreUpdateArtworkAsync(game, archive);
+
+        IReadOnlyList<DepotInfo> incoming = _manifestParser.Parse(archive.LuaFilePath);
+        if (incoming.Count == 0)
+        {
+            await _messageBoxService.ShowAsync(
+                "No depots",
+                "The new manifest package does not contain any depot files.");
+            return false;
+        }
+
+        IReadOnlyList<DepotInfo> snapshots = ManifestInstallStateService.LoadSnapshots(game.AppId);
+        var previousByDepot = snapshots
+            .GroupBy(depot => depot.DepotId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var installedByDepot = (game.InstalledDepots ?? [])
+            .Where(record => !string.IsNullOrWhiteSpace(record.DepotId))
+            .GroupBy(record => record.DepotId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().ManifestId, StringComparer.Ordinal);
+
+        void ApplyUpdateSession()
+        {
+            _finalPath = archive.ExtractionDirectory;
+            _appId = game.AppId;
+            _currentGameName = string.IsNullOrWhiteSpace(game.Name) ? $"Steam App {_appId}" : game.Name;
+            _currentCoverArtPath = game.Image;
+            _currentLogoPath = string.IsNullOrWhiteSpace(game.Image)
+                ? string.Empty
+                : Path.Combine(Path.GetDirectoryName(game.Image) ?? string.Empty, "GameLogo.png");
+            _preserveLibraryOnCancel = true;
+            _wasInstalledBeforeDownload = true;
+            _installPathBeforeDownload = game.InstallPath ?? string.Empty;
+            _incrementalDownload = true;
+        }
+
+        if (installedByDepot.Count == 0 && previousByDepot.Count == 0)
+        {
+            ApplyUpdateSession();
+            await ManifestDepotIdChoiceAsync(archive.LuaFilePath);
+            return true;
+        }
+
+        bool updateAvailable = incoming.Any(depot =>
+        {
+            bool tracked = installedByDepot.ContainsKey(depot.DepotId) || previousByDepot.ContainsKey(depot.DepotId);
+            if (!tracked)
+                return false;
+
+            string? previousId = installedByDepot.TryGetValue(depot.DepotId, out string? savedId)
+                ? savedId
+                : previousByDepot.TryGetValue(depot.DepotId, out DepotInfo? snap) ? snap.ManifestId : null;
+
+            return string.IsNullOrWhiteSpace(previousId) ||
+                   !string.Equals(previousId, depot.ManifestId, StringComparison.Ordinal);
+        });
+
+        if (!updateAvailable)
+        {
+            await _messageBoxService.ShowAsync(
+                "Up to date",
+                $"{game.Name} is already on the manifests in that package.");
+            return true;
+        }
+
+        ApplyUpdateSession();
+        await ShowTimedMessageAsync(
+            "Update available",
+            $"An update is available for {game.Name}. Only changed files will be downloaded.");
+        await ManifestDepotIdChoiceAsync(archive.LuaFilePath);
+        return true;
+    }
+
+    private async Task RestoreUpdateArtworkAsync(GameEntry game, ManifestArchiveResult archive)
+    {
+        string? previousAssets = Path.GetDirectoryName(game.Image);
+        if (!string.IsNullOrWhiteSpace(previousAssets) &&
+            Directory.Exists(previousAssets) &&
+            !string.Equals(previousAssets, Path.GetDirectoryName(archive.CoverArtPath), StringComparison.OrdinalIgnoreCase))
+        {
+            CopyArtworkFile(Path.Combine(previousAssets, "GameLogo.png"), archive.LogoPath);
+            CopyArtworkFile(Path.Combine(previousAssets, "VerticalCoverArt.jpg"), archive.CoverArtPath);
+            CopyArtworkFile(Path.Combine(previousAssets, "LibraryHero.jpg"), archive.HeroPath);
+            CopyArtworkFile(Path.Combine(previousAssets, "GameIcon.jpg"), archive.IconPath);
+        }
+
+        try
+        {
+            await _steamMetadata.DownloadArtworkAsync(
+                archive.AppId,
+                archive.LogoPath,
+                archive.CoverArtPath,
+                archive.HeroPath,
+                archive.IconPath);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, $"[Downloads] Update artwork restore failed appId={archive.AppId}");
+        }
+
+        string cover = File.Exists(archive.CoverArtPath)
+            ? archive.CoverArtPath
+            : game.Image;
+        if (string.IsNullOrWhiteSpace(cover) || !File.Exists(cover))
+            return;
+
+        if (string.Equals(game.Image, cover, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        game.Image = cover;
+        await _gameLibrary.UpsertAsync(new GameEntry
+        {
+            AppId = game.AppId,
+            Name = game.Name,
+            Image = cover,
+            InstallPath = game.InstallPath,
+            IsInstalled = game.IsInstalled
+        });
+        game.RefreshArtworkFlags();
+    }
+
+    private static void CopyArtworkFile(string source, string destination)
+    {
+        if (string.IsNullOrWhiteSpace(source) ||
+            string.IsNullOrWhiteSpace(destination) ||
+            !File.Exists(source) ||
+            new FileInfo(source).Length == 0)
+            return;
+
+        if (File.Exists(destination) && new FileInfo(destination).Length > 0)
+            return;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        File.Copy(source, destination, overwrite: true);
+    }
+
+    private async Task ShowTimedMessageAsync(string title, string message, int seconds = 3)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = title,
+            Content = new TextBlock
+            {
+                Text = message,
+                TextWrapping = TextWrapping.WrapWholeWords
+            },
+            XamlRoot = ResolveDialogXamlRoot(),
+            RequestedTheme = ResolveDialogTheme()
+        };
+        dialog.Resources["ContentDialogMinHeight"] = 0.0;
+        dialog.Resources["ContentDialogMinWidth"] = 320.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 480.0;
+
+        var showTask = dialog.ShowAsync().AsTask();
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(seconds));
+        }
+        finally
+        {
+            dialog.Hide();
+            try
+            {
+                await showTask;
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
     private void ManifestDropZone_DragEnter(object sender, DragEventArgs e)
     {
         _dragDepth++;
@@ -846,6 +1107,20 @@ public sealed partial class DownloadsPage : Page
 
         try
         {
+            if (_pendingUpdateGame is GameEntry updateGame)
+            {
+                GameEntry? latest = (await _gameLibrary.LoadAsync())
+                    .FirstOrDefault(item => string.Equals(item.AppId, updateGame.AppId, StringComparison.OrdinalIgnoreCase));
+                bool consumed = await ContinueUpdateFromManifestPathAsync(latest ?? updateGame, path);
+                if (consumed)
+                {
+                    _pendingUpdateGame = null;
+                    RefreshUpdateModeHint();
+                }
+
+                return;
+            }
+
             await ImportManifestCoreAsync(path);
         }
         catch (Exception ex)
@@ -1013,12 +1288,15 @@ public sealed partial class DownloadsPage : Page
         var depotIds = availableItems.Select(item => item.DepotId).ToList();
         var relatedAppIds = _manifestParser.ParseRelatedAppIds(luaFilePath).ToList();
 
+        bool showAllDepots = (await _settingsService.LoadAsync()).ShowAllDepotIds;
         var loading = new ContentDialog
         {
-            Title = "Selecting right depots...",
+            Title = showAllDepots ? "Loading depot IDs..." : "Selecting right depots...",
             Content = new TextBlock
             {
-                Text = "Loading Windows depots from Steam...",
+                Text = showAllDepots
+                    ? "Loading every depot from the manifest..."
+                    : "Loading Windows depots from Steam...",
                 TextWrapping = TextWrapping.WrapWholeWords
             },
             XamlRoot = ResolveDialogXamlRoot(),
@@ -1045,57 +1323,50 @@ public sealed partial class DownloadsPage : Page
             }
         }
 
-        var displayRows = BuildDepotDisplayRows(availableItems, metadata);
-        var gameRows = SteamDepotPlatformFilter.PreferHostArch(
-            displayRows
-                .Where(row =>
-                    !row.Display.IsLanguage
-                    && !row.Display.IsDlc
-                    && !row.Display.IsShared)
-                .ToList());
-        var dlcRows = SteamDepotPlatformFilter.PreferHostArch(
-            displayRows
-                .Where(row => row.Display.IsDlc)
-                .OrderBy(row => DlcGroupName(row.Display), StringComparer.OrdinalIgnoreCase)
-                .ThenBy(row => DlcLanguageRank(row.Display))
-                .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
-                .ToList());
-        var languageRows = SteamDepotPlatformFilter.PreferHostArch(
-            displayRows
-                .Where(row => row.Display.IsLanguage && !row.Display.IsDlc)
-                .OrderBy(row => IsEnglishLanguage(row.Display.LanguageCode) ? 0 : 1)
-                .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
-                .ToList());
+        var displayRows = BuildDepotDisplayRows(availableItems, metadata, showAllDepots);
+        var executePostDownloadCheck = CreateRemoveSteamDrmCheckBox();
+
+        var gameRows = displayRows
+            .Where(row =>
+                !row.Display.IsLanguage
+                && !row.Display.IsDlc
+                && !row.Display.IsShared)
+            .ToList();
+        var dlcRows = displayRows
+            .Where(row => row.Display.IsDlc)
+            .OrderBy(row => DlcGroupName(row.Display), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => DlcLanguageRank(row.Display))
+            .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var languageRows = displayRows
+            .Where(row => row.Display.IsLanguage && !row.Display.IsDlc)
+            .OrderBy(row => IsEnglishLanguage(row.Display.LanguageCode) ? 0 : 1)
+            .ThenBy(row => row.Display.TypeLabel, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!showAllDepots)
+        {
+            gameRows = SteamDepotPlatformFilter.PreferHostArch(gameRows);
+            dlcRows = SteamDepotPlatformFilter.PreferHostArch(dlcRows);
+            languageRows = SteamDepotPlatformFilter.PreferHostArch(languageRows);
+        }
 
         // Some titles (MGSV) ship the game itself as language depots. Those belong
         // in this step — not an empty game list plus an optional language dialog.
         if (gameRows.Count == 0 && languageRows.Count > 0)
         {
-            gameRows = RelabelLanguageAsGame(languageRows);
+            gameRows = RelabelLanguageAsGame(languageRows, autoSelect: !showAllDepots);
             languageRows = [];
         }
 
-        var executePostDownloadCheck = new CheckBox
-        {
-            Content = new TextBlock
-            {
-                Text = "Remove Steam DRM",
-                Margin = new Thickness(8, 0, 0, 0)
-            },
-            IsChecked = true,
-            MinWidth = 0,
-            MinHeight = 0,
-            Padding = new Thickness(0),
-            VerticalAlignment = VerticalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center
-        };
-
         int windowsSelected = gameRows.Count(row => row.Display.AutoSelected);
-        string gameHint = windowsSelected > 0
-            ? $"Windows game files Steam would install ({windowsSelected}). You can change this."
-            : metadata.Count == 0
-                ? "Steam depot info unavailable. Select depots manually."
-                : "No Windows depot match — select the game files you want.";
+        string gameHint = showAllDepots
+            ? "Every game depot from the manifest, all platforms. Nothing is pre-selected."
+            : windowsSelected > 0
+                ? $"Windows game files Steam would install ({windowsSelected}). You can change this."
+                : metadata.Count == 0
+                    ? "Steam depot info unavailable. Select depots manually."
+                    : "No Windows depot match — select the game files you want.";
 
         var gamePick = await ShowDepotRowsDialogAsync(
             "Select game files",
@@ -1116,7 +1387,9 @@ public sealed partial class DownloadsPage : Page
         {
             var dlcPick = await ShowDepotRowsDialogAsync(
                 "Select DLC",
-                "Optional. Language-specific DLC packs are listed under each DLC name.",
+                showAllDepots
+                    ? "Optional. Every DLC depot, all platforms. Nothing is pre-selected."
+                    : "Optional. Language-specific DLC packs are listed under each DLC name.",
                 dlcRows,
                 NextOrDownload(languageRows.Count > 0),
                 "Skip",
@@ -1130,7 +1403,9 @@ public sealed partial class DownloadsPage : Page
         {
             var languagePick = await ShowDepotRowsDialogAsync(
                 "Select language",
-                "Optional. Leave none selected to skip extra languages.",
+                showAllDepots
+                    ? "Optional. Every language depot, all platforms. Nothing is pre-selected."
+                    : "Optional. Leave none selected to skip extra languages.",
                 languageRows,
                 "Install Selected",
                 "Skip",
@@ -1148,11 +1423,28 @@ public sealed partial class DownloadsPage : Page
         RefreshService.RequestRefresh();
     }
 
+    private static CheckBox CreateRemoveSteamDrmCheckBox() =>
+        new()
+        {
+            Content = new TextBlock
+            {
+                Text = "Remove Steam DRM",
+                Margin = new Thickness(8, 0, 0, 0)
+            },
+            IsChecked = true,
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+
     private static string NextOrDownload(bool hasMore) =>
         hasMore ? "Next" : "Install Selected";
 
     private static List<(DepotInfo Depot, DepotDisplayInfo Display)> RelabelLanguageAsGame(
-        IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display)> languageRows)
+        IReadOnlyList<(DepotInfo Depot, DepotDisplayInfo Display)> languageRows,
+        bool autoSelect = true)
     {
         var result = languageRows
             .Select(row =>
@@ -1165,7 +1457,7 @@ public sealed partial class DownloadsPage : Page
             })
             .ToList();
 
-        if (result.Count > 0 && !result.Any(row => row.Display.AutoSelected))
+        if (autoSelect && result.Count > 0 && !result.Any(row => row.Display.AutoSelected))
         {
             var first = result[0];
             result[0] = (Depot: first.Depot, Display: first.Display with { AutoSelected = first.Display.HasLocalManifest });
@@ -1486,7 +1778,8 @@ public sealed partial class DownloadsPage : Page
 
     private List<(DepotInfo Depot, DepotDisplayInfo Display)> BuildDepotDisplayRows(
         IReadOnlyList<DepotInfo> depots,
-        IReadOnlyDictionary<string, DepotMetadata> metadata)
+        IReadOnlyDictionary<string, DepotMetadata> metadata,
+        bool showAllDepots = false)
     {
         var staged = new List<(DepotInfo Depot, DepotDisplayInfo Display, DepotMetadata? Meta)>();
         foreach (var depot in depots)
@@ -1513,7 +1806,7 @@ public sealed partial class DownloadsPage : Page
                 DepotId = depot.DepotId,
                 ManifestId = depot.ManifestId,
                 Configuration = meta?.Configuration ?? string.Empty,
-                TypeLabel = FormatDepotTypeLabel(meta, depot.DepotId, _currentGameName),
+                TypeLabel = FormatDepotTypeLabel(meta, depot.DepotId, _currentGameName, showAllDepots),
                 DepotName = meta?.Name ?? string.Empty,
                 SizeBytes = size,
                 DownloadBytes = download,
@@ -1526,14 +1819,21 @@ public sealed partial class DownloadsPage : Page
             }, meta));
         }
 
-        staged = staged
-            .Where(row => !SteamDepotPlatformFilter.IsMacOsOrLinuxOnly(row.Meta, row.Display))
-            .ToList();
+        if (!showAllDepots)
+        {
+            staged = staged
+                .Where(row => !SteamDepotPlatformFilter.IsMacOsOrLinuxOnly(row.Meta, row.Display))
+                .ToList();
+        }
 
-        var windowsIds = SteamDepotPlatformFilter.SelectWindowsDepotIds(staged);
+        var windowsIds = showAllDepots
+            ? []
+            : SteamDepotPlatformFilter.SelectWindowsDepotIds(staged);
         AppLog.Write(
-            $"[Downloads] Windows auto-select {windowsIds.Count}/{staged.Count} depot(s): " +
-            string.Join(", ", windowsIds));
+            showAllDepots
+                ? $"[Downloads] Show all depot IDs ({staged.Count}), skip Windows auto-select"
+                : $"[Downloads] Windows auto-select {windowsIds.Count}/{staged.Count} depot(s): " +
+                  string.Join(", ", windowsIds));
         foreach (var row in staged)
         {
             AppLog.Write(
@@ -1565,7 +1865,7 @@ public sealed partial class DownloadsPage : Page
                     IsLanguage = row.Display.IsLanguage,
                     LanguageCode = row.Display.LanguageCode,
                     OsArch = row.Display.OsArch,
-                    AutoSelected = row.Display.HasLocalManifest && (
+                    AutoSelected = !showAllDepots && row.Display.HasLocalManifest && (
                         row.Display.IsDlc
                         || (row.Display.IsLanguage && isEnglish)
                         || (!row.Display.IsLanguage && windowsIds.Contains(row.Depot.DepotId)))
@@ -1575,20 +1875,32 @@ public sealed partial class DownloadsPage : Page
             .ToList();
     }
 
-    private static string FormatDepotTypeLabel(DepotMetadata? meta, string depotId, string gameName)
+    private static string FormatDepotTypeLabel(
+        DepotMetadata? meta,
+        string depotId,
+        string gameName,
+        bool includePlatform = false)
     {
         string? language = FormatSteamLanguage(FirstLanguageCode(meta?.Language, meta?.Name));
-
+        string label;
         if (meta?.IsDlc == true)
         {
             string dlcName = FormatDlcName(meta, depotId, gameName);
-            return string.IsNullOrWhiteSpace(language) ? dlcName : $"{dlcName} — {language}";
+            label = string.IsNullOrWhiteSpace(language) ? dlcName : $"{dlcName} — {language}";
+        }
+        else if (!string.IsNullOrWhiteSpace(language))
+        {
+            label = $"Language: {language}";
+        }
+        else
+        {
+            label = meta?.TypeLabel ?? "Game";
         }
 
-        if (!string.IsNullOrWhiteSpace(language))
-            return $"Language: {language}";
+        if (includePlatform && !string.IsNullOrWhiteSpace(meta?.OsList))
+            label = $"{label} — {meta.OsList}";
 
-        return meta?.TypeLabel ?? "Game";
+        return label;
     }
 
     private static readonly Regex LocaleSuffixRegex = new(
@@ -1853,6 +2165,9 @@ public sealed partial class DownloadsPage : Page
 
     private async Task StartDownloadProcessAsync(List<DepotInfo> selectedDepots, bool executePostDownload)
     {
+        bool incremental = _incrementalDownload;
+        _incrementalDownload = false;
+
         if (IsAppCurrentlyDownloading(_appId))
         {
             await _messageBoxService.ShowAsync(
@@ -1869,7 +2184,7 @@ public sealed partial class DownloadsPage : Page
             return;
         }
 
-        if (!await HasEnoughDiskSpaceAsync(selectedDepots))
+        if (!incremental && !await HasEnoughDiskSpaceAsync(selectedDepots))
             return;
 
         var cancellation = new CancellationTokenSource();
@@ -1934,7 +2249,7 @@ public sealed partial class DownloadsPage : Page
             $"[Downloads] Queued download '{_currentGameName}' appId={_appId} " +
             $"selectedDepots={selectedDepots.Count} ids=[{string.Join(", ", selectedDepots.Select(d => d.DepotId))}] " +
             $"preserveLibraryOnCancel={preserveLibraryOnCancel} wasInstalledBefore={wasInstalledBeforeDownload} " +
-            $"executePostDownload={executePostDownload}");
+            $"executePostDownload={executePostDownload} incremental={incremental}");
 
         var progressReporter = new Progress<DownloadProgress>(progress =>
         {
@@ -1949,7 +2264,7 @@ public sealed partial class DownloadsPage : Page
                 downloadItem.NetworkBytesReceived = progress.NetworkBytesReceived;
                 downloadItem.ProgressValue = progress.Percentage;
                 if (progress.DownloadedBytes > 0 || progress.NetworkBytesReceived > 0)
-                    downloadItem.Status = "Downloading game files...";
+                    downloadItem.Status = incremental ? "Updating game files..." : "Downloading game files...";
             });
         });
 
@@ -1960,6 +2275,7 @@ public sealed partial class DownloadsPage : Page
             string cancelledAppId = _appId;
             string cancelledGameName = _currentGameName;
             string cancelledCoverArt = _currentCoverArtPath;
+            bool incrementalDownload = incremental;
             try
             {
                 AppLog.Write($"[Downloads] Worker start '{cancelledGameName}' appId={cancelledAppId}");
@@ -2023,13 +2339,18 @@ public sealed partial class DownloadsPage : Page
                     IsInstalled = false
                 });
 
-                DispatcherQueue.TryEnqueue(() => downloadItem.Status = "Preparing install files...");
+                DispatcherQueue.TryEnqueue(() =>
+                    downloadItem.Status = incrementalDownload ? "Checking installed files..." : "Preparing install files...");
 
                 int cdnCellId = await _settingsService.GetCdnCellIdAsync();
                 int maxConcurrentChunks = await _settingsService.GetMaxConcurrentChunksAsync();
+                Dictionary<string, string> previousManifests = incrementalDownload
+                    ? ManifestInstallStateService.SnapshotPathsByDepot(cancelledAppId)
+                    : new Dictionary<string, string>(StringComparer.Ordinal);
                 AppLog.Write(
                     $"[Downloads] Engine settings cellId={cdnCellId} concurrency={maxConcurrentChunks} " +
-                    $"readyDepots={readyDepots.Count}");
+                    $"readyDepots={readyDepots.Count} incremental={incrementalDownload} " +
+                    $"previousSnapshots={previousManifests.Count}");
                 await GameDownload.BatchEngineStart(
                     readyDepots,
                     depotKeys,
@@ -2038,18 +2359,55 @@ public sealed partial class DownloadsPage : Page
                     pause.WaitWhilePausedAsync,
                     cancellation.Token,
                     cdnCellId,
-                    maxConcurrentChunks);
+                    maxConcurrentChunks,
+                    incrementalDownload,
+                    previousManifests);
                 downloadCompleted = true;
                 AppLog.Write($"[Downloads] Completed '{cancelledGameName}' → {downloadDest}");
 
+                var games = await _gameLibrary.LoadAsync();
+                GameEntry? existing = games.FirstOrDefault(item =>
+                    string.Equals(item.AppId, cancelledAppId, StringComparison.OrdinalIgnoreCase));
+                var installedDepots = (existing?.InstalledDepots ?? [])
+                    .Where(record => !string.IsNullOrWhiteSpace(record.DepotId))
+                    .GroupBy(record => record.DepotId, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+                foreach (DepotInfo depot in readyDepots)
+                {
+                    installedDepots[depot.DepotId] = new InstalledDepotRecord
+                    {
+                        DepotId = depot.DepotId,
+                        ManifestId = depot.ManifestId
+                    };
+                }
+
+                var savedDepots = installedDepots.Values.ToList();
                 await _gameLibrary.UpsertAsync(new GameEntry
                 {
                     AppId = cancelledAppId,
                     Name = cancelledGameName,
                     Image = cancelledCoverArt,
                     InstallPath = downloadDest,
-                    IsInstalled = true
+                    IsInstalled = true,
+                    InstalledDepots = savedDepots
                 });
+
+                var snapshotDepots = savedDepots.Select(record =>
+                {
+                    DepotInfo? ready = readyDepots.FirstOrDefault(depot =>
+                        string.Equals(depot.DepotId, record.DepotId, StringComparison.Ordinal));
+                    if (ready is not null)
+                        return ready;
+
+                    previousManifests.TryGetValue(record.DepotId, out string? previousPath);
+                    return new DepotInfo
+                    {
+                        DepotId = record.DepotId,
+                        ManifestId = record.ManifestId,
+                        ManifestPath = previousPath ?? string.Empty
+                    };
+                }).ToList();
+                ManifestInstallStateService.SaveSnapshots(cancelledAppId, snapshotDepots);
                 RequestLibraryRefresh();
                 await _windowsToast.NotifyInstallCompleteAsync(
                     cancelledGameName,

@@ -157,10 +157,13 @@ public sealed partial class MainWindow : Window
             ShowDownloadedOnlyCheckBox.Checked += ShowDownloadedOnlyCheckBox_Changed;
             ShowDownloadedOnlyCheckBox.Unchecked += ShowDownloadedOnlyCheckBox_Changed;
 
+            LibrarySortMode sortMode = ParseLibrarySortMode(settings.LibrarySortMode);
+            ApplyLibrarySortRadios(sortMode);
             ApplyLibraryViewButtons(settings.UseLibraryListView);
             if (ContentFrame.Content is LibraryPage library)
             {
                 library.SetShowDownloadedOnly(settings.ShowDownloadedOnly);
+                library.SetSortMode(sortMode);
                 library.SetLibraryListView(settings.UseLibraryListView);
             }
         }
@@ -214,6 +217,64 @@ public sealed partial class MainWindow : Window
 
         if (ContentFrame.Content is LibraryPage library)
             library.SetShowDownloadedOnly(showDownloadedOnly);
+    }
+
+    private async void LibrarySortRadio_Checked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not RadioButton { Tag: string tag })
+            return;
+
+        LibrarySortMode sortMode = ParseLibrarySortMode(tag);
+        try
+        {
+            await _settingsService.UpdateAsync(settings => settings.LibrarySortMode = sortMode.ToString());
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save library sort setting");
+        }
+
+        if (ContentFrame.Content is LibraryPage library)
+            library.SetSortMode(sortMode);
+    }
+
+    private void ApplyLibrarySortRadios(LibrarySortMode sortMode)
+    {
+        SortNameAscRadio.Checked -= LibrarySortRadio_Checked;
+        SortNameDescRadio.Checked -= LibrarySortRadio_Checked;
+        SortSizeDescRadio.Checked -= LibrarySortRadio_Checked;
+        SortSizeAscRadio.Checked -= LibrarySortRadio_Checked;
+        SortInstalledFirstRadio.Checked -= LibrarySortRadio_Checked;
+
+        SortNameAscRadio.IsChecked = sortMode == LibrarySortMode.NameAsc;
+        SortNameDescRadio.IsChecked = sortMode == LibrarySortMode.NameDesc;
+        SortSizeDescRadio.IsChecked = sortMode == LibrarySortMode.SizeDesc;
+        SortSizeAscRadio.IsChecked = sortMode == LibrarySortMode.SizeAsc;
+        SortInstalledFirstRadio.IsChecked = sortMode == LibrarySortMode.InstalledFirst;
+
+        SortNameAscRadio.Checked += LibrarySortRadio_Checked;
+        SortNameDescRadio.Checked += LibrarySortRadio_Checked;
+        SortSizeDescRadio.Checked += LibrarySortRadio_Checked;
+        SortSizeAscRadio.Checked += LibrarySortRadio_Checked;
+        SortInstalledFirstRadio.Checked += LibrarySortRadio_Checked;
+    }
+
+    private static LibrarySortMode ParseLibrarySortMode(string? value) =>
+        Enum.TryParse(value, ignoreCase: true, out LibrarySortMode mode)
+            ? mode
+            : LibrarySortMode.NameAsc;
+
+    private LibrarySortMode CurrentLibrarySortMode()
+    {
+        if (SortNameDescRadio.IsChecked == true)
+            return LibrarySortMode.NameDesc;
+        if (SortSizeDescRadio.IsChecked == true)
+            return LibrarySortMode.SizeDesc;
+        if (SortSizeAscRadio.IsChecked == true)
+            return LibrarySortMode.SizeAsc;
+        if (SortInstalledFirstRadio.IsChecked == true)
+            return LibrarySortMode.InstalledFirst;
+        return LibrarySortMode.NameAsc;
     }
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -480,6 +541,7 @@ public sealed partial class MainWindow : Window
         if (page is LibraryPage library)
         {
             library.SetShowDownloadedOnly(ShowDownloadedOnlyCheckBox.IsChecked == true);
+            library.SetSortMode(CurrentLibrarySortMode());
             library.SetLibraryListView(LibraryListViewButton.IsChecked == true);
             library.ApplySearchFilter(TitleBarSearchBox.Text);
         }

@@ -94,7 +94,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done: "%ROOT%installer\EZManifest-Setup-1.2.1-hotfix1.exe"
+echo Done: "%ROOT%installer\EZManifest-Setup-1.2.2.exe"
 echo Archive: "%OUT%\%ZIPNAME%"
 start "" explorer.exe "%ROOT%installer"
 endlocal

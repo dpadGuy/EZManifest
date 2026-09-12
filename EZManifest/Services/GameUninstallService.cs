@@ -8,21 +8,26 @@ public sealed class GameUninstallService
     private readonly GameInstallPathService _installPathService;
     private readonly GameLibraryService _gameLibrary;
     private readonly ShortcutService _shortcutService;
+    private readonly SteamNonSteamShortcutService _steamShortcuts;
 
     public GameUninstallService(
         AppSettingsService settingsService,
         GameInstallPathService installPathService,
         GameLibraryService gameLibrary,
-        ShortcutService shortcutService)
+        ShortcutService shortcutService,
+        SteamNonSteamShortcutService steamShortcuts)
     {
         _settingsService = settingsService;
         _installPathService = installPathService;
         _gameLibrary = gameLibrary;
         _shortcutService = shortcutService;
+        _steamShortcuts = steamShortcuts;
     }
 
     public async Task UninstallAsync(GameEntry game, bool removeFromLibrary = true)
     {
+        await _steamShortcuts.RemoveFromAllAccountsAsync(game);
+
         string downloadRoot = Path.GetFullPath(await _settingsService.GetDownloadRootAsync());
         string installDirectory = !string.IsNullOrWhiteSpace(game.InstallPath) && Directory.Exists(game.InstallPath)
             ? Path.GetFullPath(game.InstallPath)
@@ -32,6 +37,8 @@ public sealed class GameUninstallService
 
         if (Directory.Exists(installDirectory))
             await Task.Run(() => Directory.Delete(installDirectory, recursive: true));
+
+        ManifestInstallStateService.DeleteSnapshots(game.AppId);
 
         // Remove shortcut from desktop if it exists
         _shortcutService.RemoveDesktopShortcut(game.Name);

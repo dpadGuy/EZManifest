@@ -40,6 +40,9 @@ public sealed class GameEntry : INotifyPropertyChanged
     /// <summary>True after a download finishes; false for library-only / pending install.</summary>
     public bool IsInstalled { get; set; }
 
+    /// <summary>Depots and manifest IDs written on a successful install or update. Null leaves the saved list unchanged on upsert.</summary>
+    public List<InstalledDepotRecord>? InstalledDepots { get; set; }
+
     private long? _installSizeBytes;
     /// <summary>Installed folder size, or Steam Windows depot size before install.</summary>
     public long? InstallSizeBytes
@@ -176,12 +179,17 @@ public sealed class GameEntry : INotifyPropertyChanged
     public Visibility InstallingButtonVisibility =>
         IsInstalling ? Visibility.Visible : Visibility.Collapsed;
 
+    [JsonIgnore]
+    public Visibility UpdateButtonVisibility =>
+        IsInstalled && !IsInstalling ? Visibility.Visible : Visibility.Collapsed;
+
     private void NotifyActionButtonVisibility()
     {
         OnPropertyChanged(nameof(PlayButtonVisibility));
         OnPropertyChanged(nameof(StopButtonVisibility));
         OnPropertyChanged(nameof(InstallButtonVisibility));
         OnPropertyChanged(nameof(InstallingButtonVisibility));
+        OnPropertyChanged(nameof(UpdateButtonVisibility));
     }
 
     /// <summary>Larger type for short names; smaller so long titles still fit the card.</summary>

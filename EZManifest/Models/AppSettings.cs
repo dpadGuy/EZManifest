@@ -21,6 +21,9 @@ public sealed class AppSettings
     /// <summary>When true, library shows only installed/downloaded games.</summary>
     public bool ShowDownloadedOnly { get; set; }
 
+    /// <summary>How the library list is ordered. See <see cref="LibrarySortMode"/>.</summary>
+    public string LibrarySortMode { get; set; } = nameof(Models.LibrarySortMode.NameAsc);
+
     /// <summary>When true, library uses the Steam-style list instead of cover cards.</summary>
     public bool UseLibraryListView { get; set; } = true;
 
@@ -44,4 +47,7 @@ public sealed class AppSettings
 
     /// <summary>Custom manifest website used when UsePreferredManifestSource is true.</summary>
     public string PreferredManifestSourceUrl { get; set; } = string.Empty;
+
+    /// <summary>When true, the depot picker lists every depot ID and skips Windows auto-select.</summary>
+    public bool ShowAllDepotIds { get; set; }
 }

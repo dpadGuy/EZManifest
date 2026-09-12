@@ -34,6 +34,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
     private readonly GameInstallPathService _installPathService;
     private readonly PostDownloadService _postDownloadService;
     private readonly ShortcutService _shortcutService;
+    private readonly SteamNonSteamShortcutService _steamShortcuts;
     private readonly CoverArtCache _coverArtCache;
     private readonly SteamMetadataService _steamMetadata;
     private readonly AppNotificationService _notifications;
@@ -47,6 +48,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
     private Task? _loadTask;
     private string _searchQuery = string.Empty;
     private bool _showDownloadedOnly;
+    private LibrarySortMode _sortMode = LibrarySortMode.NameAsc;
     private bool _useListView = true;
     private bool _suppressListSelectionChanged;
     private int _selectionAnchorIndex = -1;
@@ -100,6 +102,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         GameInstallPathService installPathService,
         PostDownloadService postDownloadService,
         ShortcutService shortcutService,
+        SteamNonSteamShortcutService steamShortcuts,
         CoverArtCache coverArtCache,
         SteamMetadataService steamMetadata,
         AppNotificationService notifications,
@@ -113,6 +116,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         _installPathService = installPathService;
         _postDownloadService = postDownloadService;
         _shortcutService = shortcutService;
+        _steamShortcuts = steamShortcuts;
         _coverArtCache = coverArtCache;
         _steamMetadata = steamMetadata;
         _notifications = notifications;
@@ -407,6 +411,15 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         ApplyFilter();
     }
 
+    public void SetSortMode(LibrarySortMode sortMode)
+    {
+        if (_sortMode == sortMode)
+            return;
+
+        _sortMode = sortMode;
+        ApplyFilter();
+    }
+
     private void ApplyFilter()
     {
         IEnumerable<GameEntry> source = AppsList;
@@ -421,7 +434,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                 game.AppId.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
         }
 
-        var filtered = source.ToList();
+        var filtered = SortGames(source).ToList();
         if (CollectionsEqual(FilteredApps, filtered))
             return;
 
@@ -433,6 +446,22 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         if (_useListView)
             SyncListSelection();
     }
+
+    private IEnumerable<GameEntry> SortGames(IEnumerable<GameEntry> source) =>
+        _sortMode switch
+        {
+            LibrarySortMode.NameDesc => source.OrderByDescending(game => game.Name, StringComparer.OrdinalIgnoreCase),
+            LibrarySortMode.SizeDesc => source
+                .OrderByDescending(game => game.InstallSizeBytes ?? 0)
+                .ThenBy(game => game.Name, StringComparer.OrdinalIgnoreCase),
+            LibrarySortMode.SizeAsc => source
+                .OrderBy(game => game.InstallSizeBytes ?? 0)
+                .ThenBy(game => game.Name, StringComparer.OrdinalIgnoreCase),
+            LibrarySortMode.InstalledFirst => source
+                .OrderByDescending(game => game.IsInstalled)
+                .ThenBy(game => game.Name, StringComparer.OrdinalIgnoreCase),
+            _ => source.OrderBy(game => game.Name, StringComparer.OrdinalIgnoreCase)
+        };
 
     public void SetLibraryListView(bool useListView)
     {
@@ -1024,6 +1053,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         if (missing.Count == 0)
             return;
 
+        var repairedImages = new System.Collections.Concurrent.ConcurrentBag<GameEntry>();
         await Parallel.ForEachAsync(
             missing,
             new ParallelOptions { MaxDegreeOfParallelism = 6 },
@@ -1032,18 +1062,55 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                 if (version != _loadVersion)
                     return;
 
-                string? iconPath = game.ResolvedIconPath;
-                if (string.IsNullOrWhiteSpace(iconPath) && !string.IsNullOrWhiteSpace(game.AppId))
-                    iconPath = Path.Combine(AppPaths.ManifestsDirectory, $"undefined_{game.AppId}", "Assets", "GameIcon.jpg");
-                if (string.IsNullOrWhiteSpace(iconPath))
-                    return;
+                string? assetsDir = Path.GetDirectoryName(game.Image);
+                if (string.IsNullOrWhiteSpace(assetsDir) || !Directory.Exists(assetsDir))
+                {
+                    string? extract = ManifestArchiveService.FindExtractionDirectory(game.AppId);
+                    assetsDir = extract is null ? null : Path.Combine(extract, "Assets");
+                }
+
+                if (string.IsNullOrWhiteSpace(assetsDir))
+                    assetsDir = Path.Combine(AppPaths.ManifestsDirectory, game.AppId, "Assets");
+
+                Directory.CreateDirectory(assetsDir);
+                string iconPath = Path.Combine(assetsDir, "GameIcon.jpg");
+                string logoPath = Path.Combine(assetsDir, "GameLogo.png");
+                string coverPath = Path.Combine(assetsDir, "VerticalCoverArt.jpg");
+                string heroPath = Path.Combine(assetsDir, "LibraryHero.jpg");
+                bool artMissing = !File.Exists(logoPath) || !File.Exists(coverPath) || !File.Exists(iconPath);
 
                 try
                 {
-                    bool downloaded = await _steamMetadata
-                        .DownloadIconAsync(game.AppId, iconPath, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (!downloaded || version != _loadVersion)
+                    if (artMissing)
+                    {
+                        await _steamMetadata.DownloadArtworkAsync(
+                            game.AppId,
+                            logoPath,
+                            coverPath,
+                            heroPath,
+                            iconPath,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    bool downloaded = File.Exists(iconPath) && new FileInfo(iconPath).Length > 0;
+                    if (!downloaded)
+                    {
+                        downloaded = await _steamMetadata
+                            .DownloadIconAsync(game.AppId, iconPath, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    if (version != _loadVersion)
+                        return;
+
+                    if (File.Exists(coverPath) &&
+                        (string.IsNullOrWhiteSpace(game.Image) || !File.Exists(game.Image)))
+                    {
+                        game.Image = coverPath;
+                        repairedImages.Add(game);
+                    }
+
+                    if (!downloaded && !artMissing)
                         return;
 
                     DispatcherQueue.TryEnqueue(() =>
@@ -1054,6 +1121,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                         _coverArtCache.Remove(iconPath);
                         game.RefreshArtworkFlags();
                         RefreshListIcon(game);
+                        if (ReferenceEquals(_selectedGame, game))
+                            ApplyListDetailLogo(game);
                     });
                 }
                 catch (Exception ex)
@@ -1061,6 +1130,18 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                     AppLog.Write(ex, $"[Library] Icon download failed for appId={game.AppId}");
                 }
             }).ConfigureAwait(false);
+
+        if (repairedImages.IsEmpty || version != _loadVersion)
+            return;
+
+        try
+        {
+            await _gameLibrary.SaveAsync(AppsList).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to save repaired artwork paths");
+        }
     }
 
     private void GamesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1169,6 +1250,16 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
     {
         if (_selectedGame is not null)
             StopGame(_selectedGame);
+    }
+
+    private async void ListDetailCheckUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedGame is null || !_selectedGame.IsInstalled)
+            return;
+
+        _navigation.Navigate("Downloads");
+        var downloads = _services.GetRequiredService<DownloadsPage>();
+        await downloads.BeginUpdateFromLibraryAsync(_selectedGame);
     }
 
     private void ListDetailManage_Click(object sender, RoutedEventArgs e)
@@ -1282,6 +1373,9 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         {
             AppLog.Write(ex, "Failed to save install sizes");
         }
+
+        if (_sortMode is LibrarySortMode.SizeAsc or LibrarySortMode.SizeDesc)
+            DispatcherQueue.TryEnqueue(ApplyFilter);
     }
 
     private static bool EntriesEqual(GameEntry left, GameEntry right) =>
@@ -1374,6 +1468,17 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
         if (_selectedAppIds.Count > 1)
         {
+            int installed = GetSelectedGames().Count(g => g.IsInstalled);
+            var addSteam = new MenuFlyoutItem
+            {
+                Text = installed == 1
+                    ? "Add 1 installed game to Steam"
+                    : $"Add {installed} installed games to Steam",
+                IsEnabled = installed > 0
+            };
+            addSteam.Click += AddSelectedToSteamMenuItem_Click;
+            flyout.Items.Add(addSteam);
+
             var removeCards = new MenuFlyoutItem
             {
                 Text = $"Remove {_selectedAppIds.Count} cards",
@@ -1390,9 +1495,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             flyout.Items.Add(CreateMenuItem("Custom launch options", game, CustomLaunchOptionsMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Open install location", game, OpenInstallLocationMenuItem_Click, isInstalled));
             flyout.Items.Add(new MenuFlyoutSeparator());
+            flyout.Items.Add(CreateMenuItem("Add game to Steam library", game, AddToSteamMenuItem_Click, isInstalled));
             flyout.Items.Add(CreateMenuItem("Remove Steam DRM", game, RemoveSteamDrmMenuItem_Click, isInstalled));
-            flyout.Items.Add(new MenuFlyoutSeparator());
-            flyout.Items.Add(CreateMenuItem("Visit store page", game, VisitStorePageMenuItem_Click));
             flyout.Items.Add(new MenuFlyoutSeparator());
             flyout.Items.Add(CreateMenuItem("Uninstall", game, UninstallMenuItem_Click));
         }
@@ -2030,6 +2134,144 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         }
     }
 
+    private async void AddToSteamMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetGameEntry(sender) is not GameEntry game)
+            return;
+
+        await AddGamesToSteamAsync([game], promptForMissingExe: true);
+    }
+
+    private async void AddSelectedToSteamMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        var installed = GetSelectedGames().Where(g => g.IsInstalled).ToList();
+        if (installed.Count == 0)
+        {
+            await _messageBoxService.ShowAsync(
+                "No installed games",
+                "Select one or more installed games to add to Steam.");
+            return;
+        }
+
+        await AddGamesToSteamAsync(installed, promptForMissingExe: false);
+    }
+
+    private List<GameEntry> GetSelectedGames() =>
+        FilteredApps.Where(game => _selectedAppIds.Contains(game.AppId)).ToList();
+
+    private async Task<string?> ResolveSteamExeAsync(GameEntry game, bool promptForMissingExe)
+    {
+        string gameFolder = await ResolveGameFolderAsync(game);
+        bool folderExists = !string.IsNullOrWhiteSpace(gameFolder) &&
+            await Task.Run(() => Directory.Exists(gameFolder));
+        if (!folderExists)
+            return null;
+
+        string? startLocation = game.StartLocation;
+        if (!string.IsNullOrWhiteSpace(startLocation) && File.Exists(startLocation))
+            return Path.GetFullPath(startLocation);
+
+        if (!promptForMissingExe)
+            return null;
+
+        string? picked = await PickGameExecutableAsync(game, gameFolder);
+        if (string.IsNullOrWhiteSpace(picked))
+            return null;
+
+        game.StartLocation = picked;
+        if (string.IsNullOrWhiteSpace(game.InstallPath) && !string.IsNullOrWhiteSpace(gameFolder))
+            game.InstallPath = gameFolder;
+        await _gameLibrary.SaveAsync(AppsList);
+        return Path.GetFullPath(picked);
+    }
+
+    private async Task AddGamesToSteamAsync(IReadOnlyList<GameEntry> games, bool promptForMissingExe)
+    {
+        var added = new List<string>();
+        var skipped = new List<string>();
+        var failed = new List<string>();
+        bool steamWasRunning = SteamNonSteamShortcutService.IsSteamUiRunning();
+        int accounts = 0;
+
+        foreach (GameEntry game in games)
+        {
+            try
+            {
+                string? exePath = await ResolveSteamExeAsync(game, promptForMissingExe);
+                if (string.IsNullOrWhiteSpace(exePath))
+                {
+                    skipped.Add(game.Name);
+                    continue;
+                }
+
+                SteamShortcutAddResult result = await _steamShortcuts.AddToAllAccountsAsync(game, exePath);
+                accounts = result.AccountsUpdated;
+                steamWasRunning = steamWasRunning || result.SteamWasRunning;
+                added.Add(game.Name);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write(ex, $"Failed to add '{game.Name}' to Steam");
+                failed.Add($"{game.Name} ({ex.Message})");
+            }
+        }
+
+        if (added.Count == 0 && skipped.Count == 0 && failed.Count == 0)
+            return;
+
+        if (added.Count == 0 && failed.Count == 0)
+        {
+            await _messageBoxService.ShowAsync(
+                "Nothing added to Steam",
+                "Installed games need a saved executable first. Open one game, pick the exe, then try the batch again.");
+            return;
+        }
+
+        var lines = new List<string>();
+        if (added.Count == 1)
+            lines.Add($"{added[0]} has been added as a non-Steam game to {accounts} account(s).");
+        else if (added.Count > 1)
+            lines.Add($"Added {added.Count} installed games as non-Steam games to {accounts} account(s).");
+
+        if (skipped.Count > 0)
+            lines.Add($"Skipped {skipped.Count} (no executable has been chosen): {string.Join(", ", skipped)}");
+        if (failed.Count > 0)
+            lines.Add($"Failed {failed.Count}: {string.Join("; ", failed)}");
+
+        if (added.Count == 0)
+        {
+            await _messageBoxService.ShowAsync("Add to Steam", string.Join("\n\n", lines));
+            return;
+        }
+
+        if (!steamWasRunning)
+        {
+            await _messageBoxService.ShowAsync(
+                added.Count > 1 ? "Games have been added to Steam" : "Game has been added to Steam",
+                string.Join("\n\n", lines));
+            return;
+        }
+
+        lines.Add("Would you like to restart Steam for the changes to take effect?");
+        var restart = await _messageBoxService.ShowAsync(
+            added.Count > 1 ? "Games have been added to Steam" : "Game has been added to Steam",
+            string.Join("\n\n", lines),
+            "Restart Steam",
+            "Not now");
+        if (restart != ContentDialogResult.Primary)
+            return;
+
+        try
+        {
+            await _steamShortcuts.RestartSteamAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, "Failed to restart Steam");
+            await _messageBoxService.ShowAsync("Could not restart Steam", ex.Message);
+        }
+    }
+
     private async void RemoveSteamDrmMenuItem_Click(object sender, RoutedEventArgs e)
     {
         if (GetGameEntry(sender) is not GameEntry game)
@@ -2070,12 +2312,6 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
             AppLog.Write(ex, $"DRM removal failed for '{game.Name}' appId={game.AppId}");
             await _messageBoxService.ShowAsync("DRM Removal Failed", ex.Message);
         }
-    }
-
-    private void VisitStorePageMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        if (GetGameEntry(sender) is GameEntry game)
-            OpenStorePage(game);
     }
 
     private void OpenStorePage(GameEntry game)
@@ -2151,7 +2387,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
                 Image = game.Image,
                 StartLocation = string.Empty,
                 InstallPath = string.Empty,
-                IsInstalled = false
+                IsInstalled = false,
+                InstalledDepots = []
             });
         }
         catch (Exception ex)

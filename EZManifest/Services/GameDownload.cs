@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using EZManifest.Models;
 using Microsoft.Win32.SafeHandles;
@@ -50,7 +51,9 @@ public static class GameDownload
         Func<CancellationToken, Task> waitIfPaused,
         CancellationToken cancellationToken,
         int cdnCellId = 0,
-        int maxConcurrentChunks = 16)
+        int maxConcurrentChunks = 16,
+        bool incremental = false,
+        IReadOnlyDictionary<string, string>? previousManifestPaths = null)
     {
         maxConcurrentChunks = Math.Clamp(maxConcurrentChunks, 1, AppSettings.MaxConcurrentChunksLimit);
         int maxConnectionsPerServer = maxConcurrentChunks;
@@ -62,7 +65,8 @@ public static class GameDownload
 
         AppLog.Write(
             $"[EZManifest] BatchEngineStart begin | depots={depots.Count} keys={depotKeys.Count} " +
-            $"cellId={cdnCellId} concurrency={maxConcurrentChunks} maxConn/server={maxConnectionsPerServer}");
+            $"cellId={cdnCellId} concurrency={maxConcurrentChunks} maxConn/server={maxConnectionsPerServer} " +
+            $"incremental={incremental}");
         AppLog.Write($"[EZManifest] Install path: {downloadLocation}");
         AppLog.Write(
             $"[EZManifest] Timeouts: headers={RequestTimeout.TotalSeconds}s body={ResponseBodyTimeout.TotalSeconds}s " +
@@ -103,6 +107,11 @@ public static class GameDownload
             int depotFiles = 0;
             int depotChunks = 0;
             long depotBytes = 0;
+            DepotManifest? previous = incremental
+                ? TryLoadPreviousManifest(depot.DepotId, key, previousManifestPaths)
+                : null;
+            if (previous is not null)
+                DeleteRemovedFiles(downloadLocation, previous, manifest);
 
             foreach (var file in manifest.Files!.Where(f => !f.Flags.HasFlag(EDepotFileFlag.Directory)))
             {
@@ -118,10 +127,39 @@ public static class GameDownload
                 if (file.TotalSize > 0)
                     fileSize = Math.Max(fileSize, (long)file.TotalSize);
 
-                pendingFiles.Add(new PendingFile(depot.DepotId, key, file, targetPath, fileSize));
+                IReadOnlyList<DepotManifest.ChunkData> chunks = file.Chunks;
+                bool preserveExisting = false;
+                if (incremental)
+                {
+                    DepotManifest.FileData? previousFile = FindPreviousFile(previous, file.FileName);
+                    if (previousFile is not null && FileHashesMatch(previousFile.FileHash, file.FileHash))
+                    {
+                        AppLog.Write($"[EZManifest] Depot {depot.DepotId}: unchanged '{file.FileName}'");
+                        continue;
+                    }
+
+                    if (previousFile is not null)
+                    {
+                        chunks = ChangedChunks(previousFile, file);
+                        preserveExisting = File.Exists(targetPath);
+                    }
+                    else if (FileIsCurrentOnDisk(targetPath, fileSize, file.FileHash))
+                    {
+                        AppLog.Write($"[EZManifest] Depot {depot.DepotId}: on-disk match '{file.FileName}'");
+                        continue;
+                    }
+                }
+
+                if (chunks.Count == 0)
+                {
+                    AppLog.Write($"[EZManifest] Depot {depot.DepotId}: no changed chunks '{file.FileName}'");
+                    continue;
+                }
+
+                pendingFiles.Add(new PendingFile(depot.DepotId, key, file, targetPath, fileSize, chunks, preserveExisting));
                 depotFiles++;
-                depotChunks += file.Chunks.Count;
-                depotBytes += fileSize;
+                depotChunks += chunks.Count;
+                depotBytes += chunks.Sum(chunk => (long)chunk.UncompressedLength);
             }
 
             AppLog.Write(
@@ -164,14 +202,14 @@ public static class GameDownload
 
             // DepotDownloader pre-sizes the file. Mark sparse first so SetLength doesn't
             // zero-fill on NTFS (high-offset writes without this hang for minutes on E:).
-            await PrepareFileAsync(pending.TargetPath, pending.FileSize, cancellationToken);
+            await PrepareFileAsync(pending.TargetPath, pending.FileSize, pending.PreserveExisting, cancellationToken);
             preparedFiles++;
 
-            var state = new FileWriteState(pending.TargetPath, pending.File.Chunks.Count);
+            var state = new FileWriteState(pending.TargetPath, pending.Chunks.Count);
             fileStates.Add(state);
 
             // Offset order reduces gap-extension even on non-sparse volumes.
-            foreach (var chunk in pending.File.Chunks.OrderBy(c => c.Offset))
+            foreach (var chunk in pending.Chunks.OrderBy(c => c.Offset))
             {
                 workItems.Add(new ChunkWork
                 {
@@ -191,8 +229,15 @@ public static class GameDownload
         AppLog.Write(
             $"[EZManifest] Queue ready: files={preparedFiles} chunks={workItems.Count} " +
             $"bytes={AppLog.FormatBytes(totalBytes)} ({totalBytes}) CDN hosts={servers.Count} " +
-            $"prep={batchSw.ElapsedMilliseconds}ms");
-        progressReporter.Report(new DownloadProgress(0, totalBytes, 0));
+            $"prep={batchSw.ElapsedMilliseconds}ms incremental={incremental}");
+        progressReporter.Report(new DownloadProgress(0, Math.Max(totalBytes, 1), 0));
+
+        if (workItems.Count == 0)
+        {
+            AppLog.Write($"[EZManifest] Nothing to download (all selected files already current)");
+            progressReporter.Report(new DownloadProgress(1, 1, 0));
+            return;
+        }
         AppLog.Write($"[EZManifest] Starting {maxConcurrentChunks} chunk worker(s) for max throughput");
 
         using var handler = new SocketsHttpHandler
@@ -419,15 +464,20 @@ public static class GameDownload
         }
     }
 
-    private static async Task PrepareFileAsync(string path, long fileSize, CancellationToken cancellationToken)
+    private static async Task PrepareFileAsync(
+        string path,
+        long fileSize,
+        bool preserveExisting,
+        CancellationToken cancellationToken)
     {
         var sw = Stopwatch.StartNew();
         bool sparseOk = false;
+        FileMode mode = preserveExisting && File.Exists(path) ? FileMode.Open : FileMode.Create;
         await Task.Run(() =>
         {
             using var fs = new FileStream(
                 path,
-                FileMode.Create,
+                mode,
                 FileAccess.ReadWrite,
                 FileShare.ReadWrite,
                 bufferSize: 4096,
@@ -436,7 +486,7 @@ public static class GameDownload
             // Sparse makes SetLength metadata-only on NTFS (no zero-fill).
             sparseOk = TryMarkSparse(fs.SafeFileHandle);
 
-            if (fileSize > 0)
+            if (fileSize >= 0 && fs.Length != fileSize)
                 fs.SetLength(fileSize);
         }, cancellationToken);
 
@@ -676,12 +726,132 @@ public static class GameDownload
         return servers;
     }
 
+    private static DepotManifest? TryLoadPreviousManifest(
+        string depotId,
+        byte[] key,
+        IReadOnlyDictionary<string, string>? previousManifestPaths)
+    {
+        if (previousManifestPaths is null ||
+            !previousManifestPaths.TryGetValue(depotId, out string? path) ||
+            string.IsNullOrWhiteSpace(path) ||
+            !File.Exists(path))
+            return null;
+
+        try
+        {
+            var manifest = DepotManifest.Deserialize(File.ReadAllBytes(path));
+            manifest.DecryptFilenames(key);
+            return manifest;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, $"[EZManifest] Previous manifest failed for depot {depotId}");
+            return null;
+        }
+    }
+
+    private static DepotManifest.FileData? FindPreviousFile(DepotManifest? previous, string fileName)
+    {
+        if (previous?.Files is null)
+            return null;
+
+        string normalized = NormalizeManifestPath(fileName);
+        return previous.Files.FirstOrDefault(file =>
+            string.Equals(NormalizeManifestPath(file.FileName), normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<DepotManifest.ChunkData> ChangedChunks(
+        DepotManifest.FileData previous,
+        DepotManifest.FileData current)
+    {
+        var oldChunks = new HashSet<(string Id, ulong Offset)>();
+        foreach (var chunk in previous.Chunks)
+        {
+            if (chunk.ChunkID is not { Length: > 0 } chunkId)
+                continue;
+            oldChunks.Add((Convert.ToHexString(chunkId), chunk.Offset));
+        }
+
+        return current.Chunks.Where(chunk =>
+        {
+            if (chunk.ChunkID is not { Length: > 0 } chunkId)
+                return true;
+            return !oldChunks.Contains((Convert.ToHexString(chunkId), chunk.Offset));
+        }).ToList();
+    }
+
+    private static bool FileHashesMatch(byte[]? left, byte[]? right) =>
+        left is { Length: > 0 } &&
+        right is { Length: > 0 } &&
+        left.AsSpan().SequenceEqual(right);
+
+    private static bool FileIsCurrentOnDisk(string path, long fileSize, byte[]? expectedHash)
+    {
+        if (expectedHash is not { Length: > 0 } || !File.Exists(path))
+            return false;
+
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Length != fileSize)
+                return false;
+
+            using var stream = File.OpenRead(path);
+            byte[] actual = SHA1.HashData(stream);
+            return actual.AsSpan().SequenceEqual(expectedHash);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[EZManifest] Hash check failed '{path}': {ex.Message}");
+            return false;
+        }
+    }
+
+    private static void DeleteRemovedFiles(string downloadLocation, DepotManifest previous, DepotManifest current)
+    {
+        if (previous.Files is null)
+            return;
+
+        var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (current.Files is not null)
+        {
+            foreach (var file in current.Files)
+                keep.Add(NormalizeManifestPath(file.FileName));
+        }
+
+        foreach (var file in previous.Files.Where(item => !item.Flags.HasFlag(EDepotFileFlag.Directory)))
+        {
+            string normalized = NormalizeManifestPath(file.FileName);
+            if (keep.Contains(normalized))
+                continue;
+
+            string target = Path.Combine(downloadLocation, Path.Combine(file.FileName.Split('/', '\\')));
+            if (!File.Exists(target))
+                continue;
+
+            try
+            {
+                File.Delete(target);
+                AppLog.Write($"[EZManifest] Removed obsolete file '{file.FileName}'");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[EZManifest] Could not delete '{target}': {ex.Message}");
+            }
+        }
+    }
+
+    private static string NormalizeManifestPath(string fileName) =>
+        (fileName ?? string.Empty).Replace('\\', '/').TrimStart('/');
+
     private readonly record struct PendingFile(
         string DepotId,
         byte[] Key,
         DepotManifest.FileData File,
         string TargetPath,
-        long FileSize);
+        long FileSize,
+        IReadOnlyList<DepotManifest.ChunkData> Chunks,
+        bool PreserveExisting);
 
     private sealed class ChunkWork
     {

@@ -1,5 +1,5 @@
 #define MyAppName "EZManifest"
-#define MyAppVersion "1.2.1-hotfix1"
+#define MyAppVersion "1.2.2"
 #define MyAppPublisher "dpadGuy"
 #define MyAppURL "https://github.com/dpadGuy/EZManifest"
 #define MyAppExeName "EZManifest.exe"

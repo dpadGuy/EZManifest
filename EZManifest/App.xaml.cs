@@ -80,6 +80,7 @@ public partial class App : Application
         services.AddSingleton<GameInstallSizeService>();
         services.AddSingleton<GameUninstallService>();
         services.AddSingleton<ShortcutService>();
+        services.AddSingleton<SteamNonSteamShortcutService>();
         services.AddSingleton<CoverArtCache>();
         services.AddSingleton<AppUpdateService>();
         services.AddSingleton<EasyListBlocker>();
