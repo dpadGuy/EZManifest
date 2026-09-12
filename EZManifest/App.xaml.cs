@@ -46,6 +46,9 @@ public partial class App : Application
         }
 
         _window.Activate();
+        if (Environment.GetCommandLineArgs().Any(argument =>
+                argument.Equals(Program.ToastActivateArgument, StringComparison.OrdinalIgnoreCase)))
+            _services.GetRequiredService<WindowProvider>().ActivateExistingWindow(maximize: true);
     }
 
     public void SetTheme(ElementTheme theme)

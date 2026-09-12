@@ -76,20 +76,17 @@ public sealed class SteamNonSteamShortcutService
 
     public async Task RestartSteamAsync(CancellationToken cancellationToken = default)
     {
-        (string? steamExe, int? steamPid) = TryGetSteamUiProcess();
-        steamExe ??= FindSteamExe();
-        if (string.IsNullOrWhiteSpace(steamExe) || !File.Exists(steamExe))
-            throw new FileNotFoundException("steam.exe was not found.");
-
-        AppLog.Write($"[SteamShortcut] Restarting Steam from '{steamExe}' pid={steamPid?.ToString() ?? "none"}");
+        (_, int? steamPid) = TryGetSteamUiProcess();
+        AppLog.Write($"[SteamShortcut] Restarting Steam via steam://open/library pid={steamPid?.ToString() ?? "none"}");
         if (steamPid is int pid)
             await KillSteamUiAsync(pid, cancellationToken);
 
         Process.Start(new ProcessStartInfo
         {
-            FileName = steamExe,
-            UseShellExecute = true,
-            WorkingDirectory = Path.GetDirectoryName(steamExe) ?? string.Empty
+            FileName = "cmd.exe",
+            Arguments = "/c start \"\" steam://open/library",
+            UseShellExecute = false,
+            CreateNoWindow = true
         });
     }
 

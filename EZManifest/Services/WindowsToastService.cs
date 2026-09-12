@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Security;
 using EZManifest.Models;
+using Microsoft.Win32;
 using Windows.Data.Xml.Dom;
 using Windows.Graphics.Imaging;
 using Windows.Storage;
@@ -13,15 +14,24 @@ public sealed class WindowsToastService
     public const string AppUserModelId = "dpadGuy.EZManifest";
     private const int MaxToastImageBytes = 180_000;
 
+    private const string InstallToastGroup = "ezmanifest-install";
+    private const string InstallToastTag = "install-complete";
+
     private readonly AppSettingsService _settingsService;
     private readonly SteamMetadataService _steamMetadata;
+    private readonly WindowProvider _windowProvider;
+    private readonly List<ToastNotification> _activeToasts = [];
     private bool _initialized;
     private bool _canShow;
 
-    public WindowsToastService(AppSettingsService settingsService, SteamMetadataService steamMetadata)
+    public WindowsToastService(
+        AppSettingsService settingsService,
+        SteamMetadataService steamMetadata,
+        WindowProvider windowProvider)
     {
         _settingsService = settingsService;
         _steamMetadata = steamMetadata;
+        _windowProvider = windowProvider;
     }
 
     public void Initialize()
@@ -34,6 +44,7 @@ public sealed class WindowsToastService
         try
         {
             SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
+            RegisterToastProtocol();
             _ = ToastNotificationManager.CreateToastNotifier(AppUserModelId);
             _canShow = true;
         }
@@ -80,18 +91,83 @@ public sealed class WindowsToastService
             AppLog.Write($"[Toast] title='{title}' image='{imagePath ?? "(none)"}' uri='{imageUri ?? "(none)"}'");
 
             string xml = imageUri is null
-                ? $@"<toast><visual><binding template=""ToastGeneric""><text>{SecurityElement.Escape(title)}</text></binding></visual></toast>"
-                : $@"<toast><visual><binding template=""ToastGeneric""><image placement=""appLogoOverride"" src=""{SecurityElement.Escape(imageUri)}""/><text>{SecurityElement.Escape(title)}</text></binding></visual></toast>";
+                ? $@"<toast activationType=""protocol"" launch=""ezmanifest:focus""><visual><binding template=""ToastGeneric""><text>{SecurityElement.Escape(title)}</text></binding></visual></toast>"
+                : $@"<toast activationType=""protocol"" launch=""ezmanifest:focus""><visual><binding template=""ToastGeneric""><image placement=""appLogoOverride"" src=""{SecurityElement.Escape(imageUri)}""/><text>{SecurityElement.Escape(title)}</text></binding></visual></toast>";
 
             var document = new XmlDocument();
             document.LoadXml(xml);
-            ToastNotificationManager.CreateToastNotifier(AppUserModelId)
-                .Show(new ToastNotification(document));
+            var toast = new ToastNotification(document)
+            {
+                Tag = InstallToastTag,
+                Group = InstallToastGroup
+            };
+            toast.Activated += OnInstallToastActivated;
+            toast.Dismissed += OnInstallToastDismissed;
+            toast.Failed += OnInstallToastFailed;
+            _activeToasts.Add(toast);
+            ToastNotificationManager.CreateToastNotifier(AppUserModelId).Show(toast);
         }
         catch (Exception ex)
         {
             AppLog.Write(ex, "Windows notification failed");
         }
+    }
+
+    private void OnInstallToastActivated(ToastNotification toast, object args)
+    {
+        ReleaseToast(toast);
+        RemoveInstallToastFromHistory();
+        AppLog.Write("[Toast] Install notification clicked");
+        _windowProvider.ActivateExistingWindow(maximize: true);
+    }
+
+    private void OnInstallToastDismissed(ToastNotification toast, ToastDismissedEventArgs args)
+    {
+        ReleaseToast(toast);
+        AppLog.Write($"[Toast] Install notification dismissed ({args.Reason})");
+    }
+
+    private void OnInstallToastFailed(ToastNotification toast, ToastFailedEventArgs args)
+    {
+        ReleaseToast(toast);
+        AppLog.Write(args.ErrorCode, "[Toast] Install notification failed");
+    }
+
+    private void ReleaseToast(ToastNotification toast)
+    {
+        toast.Activated -= OnInstallToastActivated;
+        toast.Dismissed -= OnInstallToastDismissed;
+        toast.Failed -= OnInstallToastFailed;
+        _activeToasts.Remove(toast);
+    }
+
+    public static void ClearInstallToast() => RemoveInstallToastFromHistory();
+
+    private static void RemoveInstallToastFromHistory()
+    {
+        try
+        {
+            ToastNotificationManager.History.Remove(InstallToastTag, InstallToastGroup, AppUserModelId);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write($"[Toast] Could not clear notification history: {ex.Message}");
+        }
+    }
+
+    private static void RegisterToastProtocol()
+    {
+        string? exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+            exe = Path.Combine(AppPaths.ExeDirectory, "EZManifest.exe");
+        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+            return;
+
+        using RegistryKey root = Registry.CurrentUser.CreateSubKey(@"Software\Classes\ezmanifest");
+        root.SetValue(null, "URL:EZManifest Protocol");
+        root.SetValue("URL Protocol", string.Empty);
+        using RegistryKey command = root.CreateSubKey(@"shell\open\command");
+        command.SetValue(null, $"\"{exe}\" {Program.ToastActivateArgument}");
     }
 
     private async Task<string?> PrepareToastImageAsync(string? appId, string? coverArtPath)
