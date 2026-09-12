@@ -481,7 +481,7 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         }
     }
 
-    private void SetSelectedGame(GameEntry? game)
+    private void SetSelectedGame(GameEntry? game, bool loadArtwork = true)
     {
         if (ReferenceEquals(_selectedGame, game))
             return;
@@ -491,7 +491,8 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedGameStatus)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasSelectedGameVisibility)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(NoSelectedGameVisibility)));
-        _ = LoadListDetailArtworkAsync();
+        if (loadArtwork)
+            _ = LoadListDetailArtworkAsync();
     }
 
     private void SyncListSelection()
@@ -637,10 +638,17 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
         try
         {
+            int decodeWidth = 1280;
+            if (ListDetailHeroHost?.ActualWidth > 0)
+            {
+                double scale = XamlRoot?.RasterizationScale ?? 1;
+                decodeWidth = (int)Math.Ceiling(ListDetailHeroHost.ActualWidth * scale);
+            }
+
             ListDetailCover.Source = new BitmapImage
             {
-                DecodePixelType = DecodePixelType.Logical,
-                DecodePixelWidth = 1920,
+                DecodePixelType = DecodePixelType.Physical,
+                DecodePixelWidth = Math.Clamp(decodeWidth, 640, 1920),
                 UriSource = new Uri(Path.GetFullPath(path), UriKind.Absolute)
             };
         }
@@ -1189,20 +1197,24 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
         if (GetGameEntry(e.OriginalSource) is not GameEntry game)
             return;
 
+        bool alreadySelected = ReferenceEquals(_selectedGame, game);
         if (!_selectedAppIds.Contains(game.AppId))
-            SelectOnlyListGame(game);
+            SelectOnlyListGame(game, loadArtwork: false);
+        else
+            SetSelectedGame(game, loadArtwork: false);
 
-        SetSelectedGame(game);
         ShowGameContextMenu(game, e.OriginalSource as FrameworkElement, e.GetPosition(e.OriginalSource as UIElement));
+        if (!alreadySelected)
+            _ = LoadListDetailArtworkAsync();
         e.Handled = true;
     }
 
-    private void SelectOnlyListGame(GameEntry game)
+    private void SelectOnlyListGame(GameEntry game, bool loadArtwork = true)
     {
         ClearSelection();
         SetSelected(game, true);
         _selectionAnchorIndex = IndexOfFiltered(game);
-        SetSelectedGame(game);
+        SetSelectedGame(game, loadArtwork);
         ApplyListViewSelectionFromIds(game);
     }
 
@@ -1476,7 +1488,11 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
     private void ShowGameContextMenu(GameEntry game, FrameworkElement? target, Windows.Foundation.Point position, bool includeCheckForUpdates = false)
     {
-        var flyout = new MenuFlyout();
+        var flyout = new MenuFlyout
+        {
+            AreOpenCloseAnimationsEnabled = false,
+            MenuFlyoutPresenterStyle = SolidMenuFlyoutPresenterStyle
+        };
 
         if (_selectedAppIds.Count > 1)
         {
@@ -1517,6 +1533,23 @@ public sealed partial class LibraryPage : Page, INotifyPropertyChanged
 
         if (target is not null)
             flyout.ShowAt(target, position);
+    }
+
+    private static Style? _solidMenuFlyoutPresenterStyle;
+
+    private static Style SolidMenuFlyoutPresenterStyle
+    {
+        get
+        {
+            if (_solidMenuFlyoutPresenterStyle is not null)
+                return _solidMenuFlyoutPresenterStyle;
+
+            var style = new Style(typeof(MenuFlyoutPresenter));
+            if (Application.Current.Resources.TryGetValue("SolidBackgroundFillColorBaseBrush", out object? brush))
+                style.Setters.Add(new Setter(Control.BackgroundProperty, brush));
+            _solidMenuFlyoutPresenterStyle = style;
+            return style;
+        }
     }
 
     private static MenuFlyoutItem CreateMenuItem(string text, GameEntry game, RoutedEventHandler click, bool isEnabled = true)
