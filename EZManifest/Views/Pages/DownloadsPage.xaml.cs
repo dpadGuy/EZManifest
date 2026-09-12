@@ -34,6 +34,7 @@ public sealed partial class DownloadsPage : Page
     private readonly PostDownloadService _postDownloadService;
     private readonly WindowsToastService _windowsToast;
     private readonly FileExplorerPickerService _filePicker;
+    private readonly SteamNonSteamShortcutService _steamShortcuts;
 
     private string _finalPath = string.Empty;
     private string _appId = string.Empty;
@@ -71,7 +72,8 @@ public sealed partial class DownloadsPage : Page
         WindowProvider windowProvider,
         PostDownloadService postDownloadService,
         WindowsToastService windowsToast,
-        FileExplorerPickerService filePicker)
+        FileExplorerPickerService filePicker,
+        SteamNonSteamShortcutService steamShortcuts)
     {
         _notifications = notifications;
         _manifestParser = manifestParser;
@@ -87,6 +89,7 @@ public sealed partial class DownloadsPage : Page
         _postDownloadService = postDownloadService;
         _windowsToast = windowsToast;
         _filePicker = filePicker;
+        _steamShortcuts = steamShortcuts;
 
         InitializeComponent();
         Downloads.CollectionChanged += (_, _) =>
@@ -1325,6 +1328,15 @@ public sealed partial class DownloadsPage : Page
 
         var displayRows = BuildDepotDisplayRows(availableItems, metadata, showAllDepots);
         var executePostDownloadCheck = CreateRemoveSteamDrmCheckBox();
+        var addToSteamCheck = CreateAddToSteamCheckBox();
+        var installOptions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        installOptions.Children.Add(executePostDownloadCheck);
+        installOptions.Children.Add(addToSteamCheck);
 
         var gameRows = displayRows
             .Where(row =>
@@ -1374,7 +1386,7 @@ public sealed partial class DownloadsPage : Page
             gameRows,
             NextOrDownload(dlcRows.Count > 0 || languageRows.Count > 0),
             "Cancel",
-            CreateDepotDialogHeader(executePostDownloadCheck));
+            CreateDepotDialogHeader(installOptions));
 
         if (gamePick.Result != ContentDialogResult.Primary)
             return;
@@ -1419,19 +1431,26 @@ public sealed partial class DownloadsPage : Page
 
         await StartDownloadProcessAsync(
             selectedItems,
-            executePostDownload: executePostDownloadCheck.IsChecked == true);
+            executePostDownload: executePostDownloadCheck.IsChecked == true,
+            addToSteam: addToSteamCheck.IsChecked == true);
         RefreshService.RequestRefresh();
     }
 
     private static CheckBox CreateRemoveSteamDrmCheckBox() =>
+        CreateInstallOptionCheckBox("Remove Steam DRM", isChecked: true);
+
+    private static CheckBox CreateAddToSteamCheckBox() =>
+        CreateInstallOptionCheckBox("Add game to Steam", isChecked: false);
+
+    private static CheckBox CreateInstallOptionCheckBox(string text, bool isChecked) =>
         new()
         {
             Content = new TextBlock
             {
-                Text = "Remove Steam DRM",
+                Text = text,
                 Margin = new Thickness(8, 0, 0, 0)
             },
-            IsChecked = true,
+            IsChecked = isChecked,
             MinWidth = 0,
             MinHeight = 0,
             Padding = new Thickness(0),
@@ -2163,7 +2182,10 @@ public sealed partial class DownloadsPage : Page
         return total;
     }
 
-    private async Task StartDownloadProcessAsync(List<DepotInfo> selectedDepots, bool executePostDownload)
+    private async Task StartDownloadProcessAsync(
+        List<DepotInfo> selectedDepots,
+        bool executePostDownload,
+        bool addToSteam)
     {
         bool incremental = _incrementalDownload;
         _incrementalDownload = false;
@@ -2249,7 +2271,7 @@ public sealed partial class DownloadsPage : Page
             $"[Downloads] Queued download '{_currentGameName}' appId={_appId} " +
             $"selectedDepots={selectedDepots.Count} ids=[{string.Join(", ", selectedDepots.Select(d => d.DepotId))}] " +
             $"preserveLibraryOnCancel={preserveLibraryOnCancel} wasInstalledBefore={wasInstalledBeforeDownload} " +
-            $"executePostDownload={executePostDownload} incremental={incremental}");
+            $"executePostDownload={executePostDownload} addToSteam={addToSteam} incremental={incremental}");
 
         var progressReporter = new Progress<DownloadProgress>(progress =>
         {
@@ -2422,6 +2444,16 @@ public sealed partial class DownloadsPage : Page
                         cancelledAppId,
                         downloadDest,
                         cancellation.Token);
+                }
+
+                if (addToSteam && !string.IsNullOrWhiteSpace(downloadDest))
+                {
+                    DispatcherQueue.TryEnqueue(() => downloadItem.Status = "Adding game to Steam...");
+                    await RunOnUiAsync(() => AddInstalledGameToSteamAsync(
+                        cancelledGameName,
+                        cancelledAppId,
+                        downloadDest,
+                        cancelledCoverArt));
                 }
 
                 DispatcherQueue.TryEnqueue(() =>
@@ -2627,6 +2659,185 @@ public sealed partial class DownloadsPage : Page
 
             RequestLibraryRefresh();
         }
+    }
+
+    private async Task AddInstalledGameToSteamAsync(
+        string gameName,
+        string appId,
+        string installFolder,
+        string? coverArt)
+    {
+        try
+        {
+            var games = await _gameLibrary.LoadAsync();
+            GameEntry game = games.FirstOrDefault(item =>
+                    string.Equals(item.AppId, appId, StringComparison.OrdinalIgnoreCase))
+                ?? new GameEntry
+                {
+                    AppId = appId,
+                    Name = gameName,
+                    Image = coverArt,
+                    InstallPath = installFolder,
+                    IsInstalled = true
+                };
+
+            if (string.IsNullOrWhiteSpace(game.InstallPath))
+                game.InstallPath = installFolder;
+
+            string? exePath = await PickGameExecutableAsync(game, installFolder);
+            if (string.IsNullOrWhiteSpace(exePath))
+            {
+                await _messageBoxService.ShowAsync(
+                    "Not added to Steam",
+                    "Choose the game executable to add it as a non-Steam game.");
+                return;
+            }
+
+            game.StartLocation = exePath;
+            await _gameLibrary.UpsertAsync(game);
+
+            SteamShortcutAddResult result = await _steamShortcuts.AddToAllAccountsAsync(game, exePath);
+            string message = $"{game.Name} has been added as a non-Steam game to {result.AccountsUpdated} account(s).";
+            if (!result.SteamWasRunning)
+            {
+                await _messageBoxService.ShowAsync("Game has been added to Steam", message);
+                return;
+            }
+
+            ContentDialogResult restart = await _messageBoxService.ShowAsync(
+                "Game has been added to Steam",
+                message + "\n\nWould you like to restart Steam for the changes to take effect?",
+                "Restart Steam",
+                "Not now");
+            if (restart != ContentDialogResult.Primary)
+                return;
+
+            await _steamShortcuts.RestartSteamAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write(ex, $"Failed to add '{gameName}' to Steam after install");
+            await _messageBoxService.ShowAsync("Could not add game to Steam", ex.Message);
+        }
+    }
+
+    private async Task<string?> PickGameExecutableAsync(GameEntry game, string gameFolder)
+    {
+        if (string.IsNullOrWhiteSpace(gameFolder) ||
+            !await Task.Run(() => Directory.Exists(gameFolder)))
+        {
+            await _messageBoxService.ShowAsync(
+                "Game not installed",
+                $"Could not find the install folder for {game.Name}.");
+            return null;
+        }
+
+        List<string> executables = await Task.Run(() =>
+            Directory.EnumerateFiles(gameFolder, "*.exe", SearchOption.AllDirectories)
+                .OrderBy(path => Path.GetRelativePath(gameFolder, path).Count(c => c is '\\' or '/'))
+                .ThenBy(path => Path.GetRelativePath(gameFolder, path), StringComparer.OrdinalIgnoreCase)
+                .ToList());
+
+        if (executables.Count == 0)
+        {
+            await _messageBoxService.ShowAsync(
+                "No executables found",
+                $"No .exe files were found in:\n{gameFolder}");
+            return null;
+        }
+
+        var listPanel = new StackPanel { Spacing = 4 };
+        var choices = new List<CheckBox>();
+
+        void EnforceSingleSelection(CheckBox selected)
+        {
+            foreach (CheckBox box in choices)
+            {
+                if (!ReferenceEquals(box, selected))
+                    box.IsChecked = false;
+            }
+        }
+
+        foreach (string exePath in executables)
+        {
+            var checkBox = new CheckBox
+            {
+                Content = Path.GetRelativePath(gameFolder, exePath),
+                Tag = exePath,
+                Margin = new Thickness(0, 2, 0, 2)
+            };
+            checkBox.Checked += (_, _) => EnforceSingleSelection(checkBox);
+            choices.Add(checkBox);
+            listPanel.Children.Add(checkBox);
+        }
+
+        CheckBox? preferred = choices.FirstOrDefault(box =>
+        {
+            string name = Path.GetFileName((string)box.Tag);
+            return name.Contains("Shipping", StringComparison.OrdinalIgnoreCase)
+                || name.Contains(game.Name.Replace(" ", ""), StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, $"{game.AppId}.exe", StringComparison.OrdinalIgnoreCase);
+        }) ?? choices[0];
+        preferred.IsChecked = true;
+
+        var root = new StackPanel { Spacing = 10 };
+        root.Children.Add(new TextBlock
+        {
+            Text = "Select the game executable to add to Steam:",
+            TextWrapping = TextWrapping.Wrap
+        });
+        root.Children.Add(new ScrollViewer
+        {
+            Content = listPanel,
+            MaxHeight = 360,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+        });
+
+        FrameworkElement? host = _windowProvider.Window.Content as FrameworkElement;
+        var dialog = new ContentDialog
+        {
+            Title = game.Name,
+            Content = root,
+            PrimaryButtonText = "Use selected",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = host?.XamlRoot ?? XamlRoot,
+            RequestedTheme = host?.ActualTheme ?? ActualTheme
+        };
+        dialog.Resources["ContentDialogMinWidth"] = 420.0;
+        dialog.Resources["ContentDialogMaxWidth"] = 720.0;
+
+        ContentDialogResult result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary)
+            return null;
+
+        return choices.FirstOrDefault(box => box.IsChecked == true)?.Tag as string;
+    }
+
+    private Task RunOnUiAsync(Func<Task> action)
+    {
+        if (DispatcherQueue.HasThreadAccess)
+            return action();
+
+        var finished = new TaskCompletionSource();
+        if (!DispatcherQueue.TryEnqueue(async () =>
+            {
+                try
+                {
+                    await action();
+                    finished.SetResult();
+                }
+                catch (Exception ex)
+                {
+                    finished.SetException(ex);
+                }
+            }))
+        {
+            finished.SetException(new InvalidOperationException("Could not show the Steam executable picker."));
+        }
+
+        return finished.Task;
     }
 
     private void RequestLibraryRefresh()
